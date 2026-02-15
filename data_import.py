@@ -46,19 +46,23 @@ def parse_phone_number(contact_info: str) -> str:
 
 
 def fax_to_vonage_email(fax_number: str, domain: str = "fax.vonagebusiness.com") -> str:
-    """Convert a fax number to Vonage email format: 1(###)#######@fax.vonagebusiness.com."""
+    """Convert a fax number to Vonage email format: 1XXXXXXXXXX@fax.vonagebusiness.com.
+
+    Uses plain digits only (no parentheses) so the address is valid RFC 5321.
+    """
     if not fax_number:
         return ""
-    digits = re.sub(r'\D', '', fax_number)
+    digits = re.sub(r'[^0-9]', '', str(fax_number))
     if not digits:
         return ""
-    if not digits.startswith("1"):
-        digits = "1" + digits
-    if len(digits) < 11:
+    # Strip leading 1 for 11-digit numbers then re-add for consistency
+    if len(digits) == 11 and digits[0] == "1":
+        digits = digits[1:]
+    elif len(digits) > 11:
+        digits = digits[-10:]
+    if len(digits) != 10:
         return ""
-    area_code = digits[1:4]
-    local = digits[4:11]
-    return f"1({area_code}){local}@{domain}"
+    return f"1{digits}@{domain}"
 
 
 def parse_providers(providers_text: str) -> list:

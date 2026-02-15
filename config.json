@@ -8,7 +8,7 @@
         "Kianah"
     ],
     "vonage_domain": "fax.vonagebusiness.com",
-    "app_password_hash": "$2b$12$QBgZSPaR/3r.6GMiQ6ubqOOh7EdgF.5NE7Toyqjs7anqNrbOSv7q6",
+    "app_password_hash": "",
     "reminder_days": {
         "lunch_followup": 90,
         "cookie_visit": 60,
@@ -39,6 +39,12 @@
         "75860",
         "75862"
     ],
+    "microsoft_graph": {
+        "client_id": "",
+        "client_secret": "",
+        "tenant_id": "",
+        "sender_email": "office@nhcancerclinics.com"
+    },
     "woodlands_zips": [
         "77354",
         "77355",

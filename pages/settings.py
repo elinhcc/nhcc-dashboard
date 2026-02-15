@@ -1,19 +1,20 @@
-"""Settings page: app configuration, paths, team members, password management."""
+"""Settings page: app configuration, paths, team members, password, Graph API credentials."""
 import streamlit as st
 import os
 from utils import load_config, save_config
 
 
 def show_settings():
-    st.markdown("## ⚙️ Settings")
+    st.markdown("## Settings")
 
     config = load_config()
 
-    tab_general, tab_paths, tab_team, tab_password, tab_data = st.tabs([
-        "General", "File Paths", "Team Members", "Password", "Data Management",
+    tab_general, tab_paths, tab_team, tab_graph, tab_password, tab_data = st.tabs([
+        "General", "File Paths", "Team Members",
+        "Email (Graph API)", "Password", "Data Management",
     ])
 
-    # ── General ────────────────────────────────────────────────────────
+    # ── General ──────────────────────────────────────────────────────
     with tab_general:
         st.markdown("### Email Configuration")
         send_from = st.text_input("Send-from Email", value=config.get("send_from_email", ""))
@@ -35,7 +36,7 @@ def show_settings():
             save_config(config)
             st.success("Settings saved!")
 
-    # ── File Paths ─────────────────────────────────────────────────────
+    # ── File Paths ───────────────────────────────────────────────────
     with tab_paths:
         st.markdown("### File Paths")
         excel_path = st.text_input("Excel File Path", value=config.get("excel_path", ""))
@@ -44,14 +45,14 @@ def show_settings():
         col1, col2 = st.columns(2)
         with col1:
             if os.path.exists(excel_path):
-                st.success("✅ Excel file found")
+                st.success("Excel file found")
             else:
-                st.error("❌ Excel file not found")
+                st.error("Excel file not found")
         with col2:
             if os.path.exists(flyer_folder):
-                st.success("✅ Flyer folder found")
+                st.success("Flyer folder found")
             else:
-                st.error("❌ Flyer folder not found")
+                st.error("Flyer folder not found")
 
         if st.button("Save Path Settings", type="primary"):
             config["excel_path"] = excel_path
@@ -59,7 +60,7 @@ def show_settings():
             save_config(config)
             st.success("Paths saved!")
 
-    # ── Team Members ───────────────────────────────────────────────────
+    # ── Team Members ─────────────────────────────────────────────────
     with tab_team:
         st.markdown("### Team Members")
         members = config.get("team_members", [])
@@ -68,7 +69,7 @@ def show_settings():
             col1, col2 = st.columns([4, 1])
             col1.text(member)
             with col2:
-                if st.button("❌", key=f"rm_member_{i}"):
+                if st.button("Remove", key=f"rm_member_{i}"):
                     members.pop(i)
                     config["team_members"] = members
                     save_config(config)
@@ -82,7 +83,137 @@ def show_settings():
             st.success(f"Added {new_member}")
             st.rerun()
 
-    # ── Password ───────────────────────────────────────────────────────
+    # ── Email (Graph API) ────────────────────────────────────────────
+    with tab_graph:
+        st.markdown("### Microsoft Graph API Configuration")
+        st.info(
+            "Enter your Azure App Registration credentials here. "
+            "You need a **Client ID**, **Client Secret**, and **Tenant ID** "
+            "from the Azure Portal."
+        )
+
+        graph_config = config.get("microsoft_graph", {})
+
+        with st.form("graph_api_config"):
+            st.markdown("#### Azure Credentials")
+
+            client_id = st.text_input(
+                "Client ID (Application ID)",
+                value=graph_config.get("client_id", ""),
+                help="Azure Portal > App registrations > NHCC Outreach Dashboard > Overview > Application (client) ID",
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+            )
+            client_secret = st.text_input(
+                "Client Secret (Secret Value)",
+                value=graph_config.get("client_secret", ""),
+                type="password",
+                help="Azure Portal > Certificates & secrets > Client secrets > VALUE (not Secret ID!)",
+                placeholder="Enter the secret VALUE here",
+            )
+            tenant_id = st.text_input(
+                "Tenant ID (Directory ID)",
+                value=graph_config.get("tenant_id", ""),
+                help="Azure Portal > App registrations > Overview > Directory (tenant) ID",
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+            )
+            sender_email = st.text_input(
+                "Sender Email Address",
+                value=graph_config.get("sender_email", "office@nhcancerclinics.com"),
+                help="The email address that will send flyers and other automated emails",
+            )
+
+            col_save, col_clear = st.columns(2)
+            with col_save:
+                submitted = st.form_submit_button("Save Configuration", type="primary")
+            with col_clear:
+                cleared = st.form_submit_button("Clear All")
+
+            if submitted:
+                if not all([client_id.strip(), client_secret.strip(), tenant_id.strip()]):
+                    st.error("Please fill in all required fields (Client ID, Secret, Tenant ID)")
+                else:
+                    config["microsoft_graph"] = {
+                        "client_id": client_id.strip(),
+                        "client_secret": client_secret.strip(),
+                        "tenant_id": tenant_id.strip(),
+                        "sender_email": sender_email.strip(),
+                    }
+                    save_config(config)
+                    st.success("Configuration saved! Click **Test Connection** below to verify.")
+                    st.rerun()
+
+            if cleared:
+                config["microsoft_graph"] = {
+                    "client_id": "",
+                    "client_secret": "",
+                    "tenant_id": "",
+                    "sender_email": "office@nhcancerclinics.com",
+                }
+                save_config(config)
+                st.success("Configuration cleared")
+                st.rerun()
+
+        # Test connection (outside form so it can run independently)
+        st.markdown("#### Test Connection")
+
+        if st.button("Test Microsoft Graph Connection", type="primary"):
+            graph_config = config.get("microsoft_graph", {})
+            if not all([graph_config.get("client_id"), graph_config.get("client_secret"), graph_config.get("tenant_id")]):
+                st.error("Please save your credentials first")
+            else:
+                with st.spinner("Testing connection..."):
+                    try:
+                        from outlook_graph import OutlookGraphAPI
+                        api = OutlookGraphAPI(
+                            graph_config["client_id"],
+                            graph_config["client_secret"],
+                            graph_config["tenant_id"],
+                        )
+                        result = api.test_connection()
+                        if result["success"]:
+                            st.success(f"{result['message']}")
+                            st.balloons()
+                            st.info("You're ready to send flyers! Go to Flyer Campaigns page.")
+                        else:
+                            st.error(f"Connection failed: {result['error']}")
+                            st.warning("Please check your credentials and try again")
+                    except ImportError:
+                        st.error("Missing dependency: run `pip install msal requests` in the project virtual environment.")
+                    except Exception as e:
+                        st.error(f"Error testing connection: {e}")
+
+        # Current status
+        graph_configured = all([
+            graph_config.get("client_id"),
+            graph_config.get("client_secret"),
+            graph_config.get("tenant_id"),
+        ])
+        if graph_configured:
+            st.success("Microsoft Graph API is configured")
+            st.write(f"**Sender Email:** {graph_config.get('sender_email', 'N/A')}")
+        else:
+            st.warning("Microsoft Graph API not configured yet")
+
+        # Help section
+        with st.expander("How to get these credentials from Azure Portal"):
+            st.markdown("""
+            ### Step-by-Step Guide
+
+            1. **Open Azure Portal** - https://portal.azure.com (sign in with your work account)
+            2. **Navigate to App Registration** - Azure Active Directory > App registrations > "NHCC Outreach Dashboard"
+            3. **Copy Client ID and Tenant ID** from the **Overview** page
+               - Application (client) ID -> paste in "Client ID" above
+               - Directory (tenant) ID -> paste in "Tenant ID" above
+            4. **Get Client Secret** - Certificates & secrets > Client secrets
+               - Copy the **VALUE** column (NOT the Secret ID!)
+            5. **Save and Test** - Click Save Configuration, then Test Connection
+
+            ### Required API Permissions (already configured):
+            - Microsoft Graph > **Mail.Send** (Application) - Admin consent granted
+            - Microsoft Graph > **User.Read** (Delegated) - Admin consent granted
+            """)
+
+    # ── Password ─────────────────────────────────────────────────────
     with tab_password:
         st.markdown("### Set App Password")
         new_pw = st.text_input("New Password", type="password", key="new_pw")
@@ -110,13 +241,13 @@ def show_settings():
         else:
             st.warning("No password is set. Anyone can access the app.")
 
-    # ── Data Management ────────────────────────────────────────────────
+    # ── Data Management ──────────────────────────────────────────────
     with tab_data:
         st.markdown("### Data Management")
 
         st.markdown("#### Re-import Excel Data")
         st.warning("This will clear all existing data and re-import from the Excel file.")
-        if st.button("🔄 Re-import from Excel"):
+        if st.button("Re-import from Excel"):
             st.session_state["confirm_reimport"] = True
 
         if st.session_state.get("confirm_reimport", False):
@@ -144,12 +275,27 @@ def show_settings():
                     st.session_state["confirm_reimport"] = False
                     st.rerun()
 
+        st.markdown("#### Fix Vonage Fax Emails")
+        st.caption(
+            "Re-derives every practice's Vonage fax email from its fax number. "
+            "Fixes invalid formats (parentheses, double underscores, etc.)."
+        )
+        if st.button("Fix All Vonage Fax Emails", type="primary"):
+            with st.spinner("Fixing fax email formats..."):
+                from database import fix_all_vonage_emails
+                result = fix_all_vonage_emails()
+            st.success(f"Fixed {result['fixed']} fax email address(es)")
+            if result["errors"]:
+                st.warning(f"{len(result['errors'])} could not be parsed:")
+                for err in result["errors"]:
+                    st.caption(f"- {err}")
+
         st.markdown("#### Backup Database")
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "providers.db")
         if os.path.exists(db_path):
             with open(db_path, "rb") as f:
                 st.download_button(
-                    "📥 Download Database Backup",
+                    "Download Database Backup",
                     data=f,
                     file_name=f"providers_backup_{__import__('datetime').datetime.now().strftime('%Y%m%d')}.db",
                     mime="application/octet-stream",

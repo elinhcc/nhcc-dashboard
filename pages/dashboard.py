@@ -1,7 +1,7 @@
 """Main dashboard page with provider cards, stats, and overview."""
 import streamlit as st
 from database import get_dashboard_stats, get_all_practices, get_providers_for_practice
-from utils import relationship_score, score_color, score_label, get_overdue_items
+from utils import relationship_score, score_color, score_label, get_overdue_items, format_phone_link
 
 
 def show_dashboard():
@@ -65,12 +65,12 @@ def show_dashboard():
                     label = score_label(score)
                     providers = get_providers_for_practice(practice["id"])
 
+                    phone_html = format_phone_link(practice.get('phone', ''))
                     st.markdown(f"""
-                    <div style="border-left: 4px solid {color}; padding: 12px; margin-bottom: 12px;
-                                background: #f8f9fa; border-radius: 4px;">
+                    <div class="provider-card" style="border-left-color: {color};">
                         <strong>{practice['name']}</strong><br>
-                        <small style="color: #666;">{practice.get('address', '')[:60]}</small><br>
+                        <small>{practice.get('address', '')[:60]}</small><br>
                         <span style="color: {color};">● {label} ({score}/100)</span><br>
-                        <small>👨‍⚕️ {len(providers)} providers | 📞 {practice.get('phone', 'N/A')} | 📠 {'Yes' if practice.get('fax') else 'No'}</small>
+                        <small>Providers: {len(providers)} | {phone_html} | Fax: {'Yes' if practice.get('fax') else 'No'}</small>
                     </div>
                     """, unsafe_allow_html=True)

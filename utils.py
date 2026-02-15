@@ -147,6 +147,48 @@ def score_label(score):
         return "Needs Attention"
 
 
+def format_phone_link(phone: str) -> str:
+    """Return clickable HTML link for a phone number (no +1 prefix)."""
+    import re
+    if not phone:
+        return "N/A"
+    digits = re.sub(r'\D', '', phone)
+    # Strip leading 1 if 11 digits
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        formatted = f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+        return f'<a class="contact-phone" href="tel:{digits}">📞 {formatted}</a>'
+    return f"📞 {phone}"
+
+
+def format_email_link(email: str) -> str:
+    """Return clickable HTML mailto link for an email."""
+    if not email:
+        return "N/A"
+    return f'<a class="contact-email" href="mailto:{email}">✉️ {email}</a>'
+
+
+def format_fax_link(fax: str, vonage_domain: str = "fax.vonagebusiness.com") -> str:
+    """Return clickable HTML mailto link for fax-to-email."""
+    import re
+    if not fax:
+        return "N/A"
+    digits = re.sub(r'\D', '', fax)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits_display = digits[1:]
+    elif len(digits) == 10:
+        digits_display = digits
+    else:
+        digits_display = digits
+    if len(digits_display) == 10:
+        formatted = f"({digits_display[:3]}) {digits_display[3:6]}-{digits_display[6:]}"
+    else:
+        formatted = fax
+    fax_email = f"1{digits_display}@{vonage_domain}" if len(digits_display) == 10 else fax
+    return f'<a class="contact-fax" href="mailto:{fax_email}">📠 {formatted}</a>'
+
+
 def get_overdue_items():
     """Get all overdue action items across all practices."""
     from database import get_all_practices, get_contact_log, get_lunches, get_thank_yous

@@ -169,33 +169,43 @@ def init_db():
     );
     """)
 
+    # follow_ups table for scheduled follow-up activities
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS follow_ups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        practice_id INTEGER NOT NULL,
+        follow_up_type TEXT NOT NULL,
+        follow_up_date DATETIME,
+        interval TEXT,
+        status TEXT DEFAULT 'Scheduled',
+        notes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    )
+    """)
+
     # Migrations for existing databases
-    try:
-        c.execute("SELECT purpose FROM contact_log LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE contact_log ADD COLUMN purpose TEXT")
-    try:
-        c.execute("SELECT call_attempt_number FROM contact_log LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE contact_log ADD COLUMN call_attempt_number INTEGER")
-    # Ensure cookie_visits has status/next_visit_date for follow-up scheduling
-    try:
-        c.execute("SELECT status FROM cookie_visits LIMIT 1")
-    except sqlite3.OperationalError:
-        try:
-            c.execute("ALTER TABLE cookie_visits ADD COLUMN status TEXT DEFAULT 'Logged'")
-        except sqlite3.OperationalError:
-            pass
-    try:
-        c.execute("SELECT next_visit_date FROM cookie_visits LIMIT 1")
-    except sqlite3.OperationalError:
-        try:
-            c.execute("ALTER TABLE cookie_visits ADD COLUMN next_visit_date DATETIME")
-        except sqlite3.OperationalError:
-            pass
+    _migrate_column(c, "contact_log", "purpose", "TEXT")
+    _migrate_column(c, "contact_log", "call_attempt_number", "INTEGER")
+    _migrate_column(c, "contact_log", "contact_method", "TEXT")
+    _migrate_column(c, "contact_log", "email_subject", "TEXT")
+    _migrate_column(c, "contact_log", "fax_document", "TEXT")
+    _migrate_column(c, "cookie_visits", "status", "TEXT DEFAULT 'Logged'")
+    _migrate_column(c, "cookie_visits", "next_visit_date", "DATETIME")
 
     conn.commit()
     conn.close()
+
+
+def _migrate_column(cursor, table, column, col_type):
+    """Add a column to a table if it doesn't exist yet."""
+    try:
+        cursor.execute(f"SELECT {column} FROM {table} LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        except sqlite3.OperationalError:
+            pass
 
 
 # ── Practice CRUD ──────────────────────────────────────────────────────
@@ -619,6 +629,55 @@ def get_flyer_recipients(campaign_id):
 
 # ── Stats ──────────────────────────────────────────────────────────────
 
+# ── Follow-ups ────────────────────────────────────────────────────────
+
+def add_follow_up(data: dict) -> int:
+    conn = get_connection()
+    cols = ", ".join(data.keys())
+    placeholders = ", ".join(["?"] * len(data))
+    cur = conn.execute(
+        f"INSERT INTO follow_ups ({cols}) VALUES ({placeholders})",
+        list(data.values()),
+    )
+    conn.commit()
+    fid = cur.lastrowid
+    conn.close()
+    return fid
+
+
+def get_follow_ups(practice_id=None, status_filter=None):
+    conn = get_connection()
+    query = ("SELECT f.*, pr.name as practice_name FROM follow_ups f "
+             "JOIN practices pr ON f.practice_id=pr.id")
+    conditions = []
+    params = []
+    if practice_id:
+        conditions.append("f.practice_id=?")
+        params.append(practice_id)
+    if status_filter:
+        conditions.append("f.status=?")
+        params.append(status_filter)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY f.follow_up_date ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_follow_up(follow_up_id: int, data: dict):
+    conn = get_connection()
+    sets = ", ".join(f"{k}=?" for k in data)
+    conn.execute(
+        f"UPDATE follow_ups SET {sets} WHERE id=?",
+        list(data.values()) + [follow_up_id],
+    )
+    conn.commit()
+    conn.close()
+
+
+# ── Stats ──────────────────────────────────────────────────────────────
+
 def get_dashboard_stats():
     conn = get_connection()
     stats = {}
@@ -634,6 +693,12 @@ def get_dashboard_stats():
     stats["lunches_scheduled"] = conn.execute(
         "SELECT COUNT(*) FROM lunch_tracking WHERE status='Scheduled'"
     ).fetchone()[0]
+    stats["lunches_completed_month"] = conn.execute(
+        "SELECT COUNT(*) FROM lunch_tracking WHERE status='Completed' AND strftime('%Y-%m', completed_date)=strftime('%Y-%m', 'now')"
+    ).fetchone()[0]
+    stats["lunches_completed_total"] = conn.execute(
+        "SELECT COUNT(*) FROM lunch_tracking WHERE status='Completed'"
+    ).fetchone()[0]
     stats["cookie_visits_this_month"] = conn.execute(
         "SELECT COUNT(*) FROM cookie_visits WHERE strftime('%Y-%m', visit_date)=strftime('%Y-%m', 'now')"
     ).fetchone()[0]
@@ -646,6 +711,15 @@ def get_dashboard_stats():
     stats["flyers_sent_this_month"] = conn.execute(
         "SELECT COUNT(*) FROM flyer_recipients WHERE status='Sent' "
         "AND campaign_id IN (SELECT id FROM flyer_campaigns WHERE strftime('%Y-%m', sent_date)=strftime('%Y-%m', 'now'))"
+    ).fetchone()[0]
+    stats["calls_this_month"] = conn.execute(
+        "SELECT COUNT(*) FROM contact_log WHERE contact_type='Phone Call' AND strftime('%Y-%m', contact_date)=strftime('%Y-%m', 'now')"
+    ).fetchone()[0]
+    stats["emails_this_month"] = conn.execute(
+        "SELECT COUNT(*) FROM contact_log WHERE contact_type='Email Sent' AND strftime('%Y-%m', contact_date)=strftime('%Y-%m', 'now')"
+    ).fetchone()[0]
+    stats["faxes_this_month"] = conn.execute(
+        "SELECT COUNT(*) FROM contact_log WHERE contact_type='Fax Sent' AND strftime('%Y-%m', contact_date)=strftime('%Y-%m', 'now')"
     ).fetchone()[0]
     stats["huntsville_practices"] = conn.execute(
         "SELECT COUNT(*) FROM practices WHERE location_category='Huntsville' AND status='Active'"
@@ -722,6 +796,54 @@ def list_events(practice_id=None, event_type=None, month=None, year=None):
 
 def list_events_by_month(year: int, month: int):
     return list_events(month=month, year=year)
+
+
+def validate_vonage_email(email: str) -> bool:
+    """Return True if email matches 1XXXXXXXXXX@fax.vonagebusiness.com."""
+    import re
+    if not email:
+        return False
+    return bool(re.match(r'^1\d{10}@fax\.vonagebusiness\.com$', email))
+
+
+def fix_all_vonage_emails() -> dict:
+    """Re-derive every practice's fax_vonage_email from its fax column.
+
+    Returns dict with 'fixed' count and list of 'errors'.
+    """
+    import re
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, name, fax, fax_vonage_email FROM practices "
+        "WHERE fax IS NOT NULL AND fax != ''"
+    ).fetchall()
+
+    from data_import import fax_to_vonage_email
+    from utils import load_config
+    domain = load_config().get("vonage_domain", "fax.vonagebusiness.com")
+
+    fixed = 0
+    errors = []
+    for r in rows:
+        pid = r["id"]
+        old_email = r["fax_vonage_email"] or ""
+        new_email = fax_to_vonage_email(r["fax"], domain)
+        if new_email and new_email != old_email:
+            conn.execute(
+                "UPDATE practices SET fax_vonage_email=? WHERE id=?",
+                (new_email, pid),
+            )
+            fixed += 1
+        elif not new_email and old_email:
+            # Fax couldn't be parsed - clear the invalid email
+            conn.execute(
+                "UPDATE practices SET fax_vonage_email='' WHERE id=?",
+                (pid,),
+            )
+            errors.append(f"{r['name']}: could not parse fax '{r['fax']}'")
+    conn.commit()
+    conn.close()
+    return {"fixed": fixed, "errors": errors}
 
 
 def cleanup_providers_date_like(delete=False):
