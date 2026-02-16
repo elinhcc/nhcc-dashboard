@@ -9,7 +9,23 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 
 def load_config():
     with open(CONFIG_PATH, "r") as f:
-        return json.load(f)
+        config = json.load(f)
+    # Overlay Streamlit Cloud secrets onto config
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            if "microsoft_graph" in st.secrets:
+                graph = dict(st.secrets["microsoft_graph"])
+                config.setdefault("microsoft_graph", {}).update(
+                    {k: v for k, v in graph.items() if v}
+                )
+            if "app" in st.secrets:
+                app_sec = dict(st.secrets["app"])
+                if app_sec.get("password_hash"):
+                    config["app_password_hash"] = app_sec["password_hash"]
+    except Exception:
+        pass
+    return config
 
 
 def save_config(config):

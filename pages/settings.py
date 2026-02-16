@@ -4,10 +4,33 @@ import os
 from utils import load_config, save_config
 
 
+def _is_cloud():
+    """Detect Streamlit Cloud (secrets present and config.json likely read-only)."""
+    try:
+        return bool(st.secrets) and os.environ.get("STREAMLIT_SHARING_MODE") or not os.access(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.json"), os.W_OK
+        )
+    except Exception:
+        return False
+
+
+def _safe_save(config):
+    """Save config, returning True on success. Shows warning on read-only filesystem."""
+    try:
+        save_config(config)
+        return True
+    except OSError:
+        st.warning("Cannot save settings — config.json is read-only. On Streamlit Cloud, use the Secrets dashboard instead.")
+        return False
+
+
 def show_settings():
     st.markdown("## Settings")
 
     config = load_config()
+
+    if _is_cloud():
+        st.info("Running on Streamlit Cloud — sensitive settings (Graph API credentials, password) are managed via the Secrets dashboard. Config.json changes may not persist.")
 
     tab_general, tab_paths, tab_team, tab_graph, tab_password, tab_data = st.tabs([
         "General", "File Paths", "Team Members",
@@ -33,8 +56,8 @@ def show_settings():
                 "cookie_visit": int(cookie_days),
                 "flyer_send": int(flyer_days),
             }
-            save_config(config)
-            st.success("Settings saved!")
+            if _safe_save(config):
+                st.success("Settings saved!")
 
     # ── File Paths ───────────────────────────────────────────────────
     with tab_paths:
@@ -57,8 +80,8 @@ def show_settings():
         if st.button("Save Path Settings", type="primary"):
             config["excel_path"] = excel_path
             config["flyer_folder"] = flyer_folder
-            save_config(config)
-            st.success("Paths saved!")
+            if _safe_save(config):
+                st.success("Paths saved!")
 
     # ── Team Members ─────────────────────────────────────────────────
     with tab_team:
@@ -72,16 +95,16 @@ def show_settings():
                 if st.button("Remove", key=f"rm_member_{i}"):
                     members.pop(i)
                     config["team_members"] = members
-                    save_config(config)
-                    st.rerun()
+                    if _safe_save(config):
+                        st.rerun()
 
         new_member = st.text_input("Add team member")
         if st.button("Add Member") and new_member:
             members.append(new_member)
             config["team_members"] = members
-            save_config(config)
-            st.success(f"Added {new_member}")
-            st.rerun()
+            if _safe_save(config):
+                st.success(f"Added {new_member}")
+                st.rerun()
 
     # ── Email (Graph API) ────────────────────────────────────────────
     with tab_graph:
@@ -138,9 +161,9 @@ def show_settings():
                         "tenant_id": tenant_id.strip(),
                         "sender_email": sender_email.strip(),
                     }
-                    save_config(config)
-                    st.success("Configuration saved! Click **Test Connection** below to verify.")
-                    st.rerun()
+                    if _safe_save(config):
+                        st.success("Configuration saved! Click **Test Connection** below to verify.")
+                        st.rerun()
 
             if cleared:
                 config["microsoft_graph"] = {
@@ -149,9 +172,9 @@ def show_settings():
                     "tenant_id": "",
                     "sender_email": "office@nhcancerclinics.com",
                 }
-                save_config(config)
-                st.success("Configuration cleared")
-                st.rerun()
+                if _safe_save(config):
+                    st.success("Configuration cleared")
+                    st.rerun()
 
         # Test connection (outside form so it can run independently)
         st.markdown("#### Test Connection")
@@ -228,16 +251,16 @@ def show_settings():
                 import bcrypt
                 hashed = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
                 config["app_password_hash"] = hashed
-                save_config(config)
-                st.success("Password set! You'll need it next time you log in.")
+                if _safe_save(config):
+                    st.success("Password set! You'll need it next time you log in.")
 
         if config.get("app_password_hash"):
             st.info("A password is currently set.")
             if st.button("Remove Password"):
                 config["app_password_hash"] = ""
-                save_config(config)
-                st.success("Password removed. Anyone can access the app.")
-                st.rerun()
+                if _safe_save(config):
+                    st.success("Password removed. Anyone can access the app.")
+                    st.rerun()
         else:
             st.warning("No password is set. Anyone can access the app.")
 
