@@ -116,6 +116,48 @@ def show_settings():
         else:
             st.caption("No database file exists yet.")
 
+        # ── Delete Data ────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Delete Data")
+        st.warning("This will delete all provider and practice data. Office settings will be preserved.")
+
+        delete_col1, delete_col2 = st.columns([2, 1])
+        with delete_col1:
+            confirm_text = st.text_input("Type DELETE to confirm", key="delete_confirm")
+        with delete_col2:
+            if st.button("Delete All Data", type="secondary"):
+                if confirm_text == "DELETE":
+                    try:
+                        from database import get_connection
+                        conn = get_connection()
+                        # Delete in order respecting foreign keys
+                        for table in [
+                            "flyer_recipients", "flyer_campaigns",
+                            "cookie_visits", "thank_you_letters",
+                            "call_attempts", "lunch_tracking",
+                            "contact_log", "provider_history",
+                            "events", "follow_ups",
+                            "providers", "practices",
+                        ]:
+                            try:
+                                conn.execute(f"DELETE FROM {table}")
+                            except Exception:
+                                pass
+                        conn.commit()
+                        conn.close()
+                        st.success("All data deleted successfully")
+                        # Save empty DB to GitHub
+                        try:
+                            from database_persistence import save_database_to_github
+                            save_database_to_github()
+                        except Exception:
+                            pass
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.error("Please type DELETE to confirm")
+
     # ── Manage Flyers ─────────────────────────────────────────────────
     with tab_flyers:
         st.markdown("### Upload & Manage Flyers")
@@ -600,6 +642,121 @@ def show_settings():
         else:
             st.caption("Import data first to use this feature.")
 
+        st.markdown("---")
+        st.markdown("#### Database Diagnostic")
+        if db_exists():
+            if st.button("Show Database Diagnostic"):
+                try:
+                    from database import get_connection
+                    conn = get_connection()
+                    total = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
+                    with_fax = conn.execute(
+                        "SELECT COUNT(*) FROM practices WHERE fax IS NOT NULL AND fax != ''"
+                    ).fetchone()[0]
+                    with_vonage = conn.execute(
+                        "SELECT COUNT(*) FROM practices WHERE fax_vonage_email IS NOT NULL AND fax_vonage_email != ''"
+                    ).fetchone()[0]
+
+                    st.write(f"**Total practices:** {total}")
+                    st.write(f"**With fax number:** {with_fax}")
+                    st.write(f"**With Vonage email:** {with_vonage}")
+
+                    if total > 0:
+                        st.markdown("**Sample records:**")
+                        samples = conn.execute(
+                            "SELECT name, fax, fax_vonage_email FROM practices LIMIT 10"
+                        ).fetchall()
+                        for r in samples:
+                            fax_val = r["fax"] or "(empty)"
+                            vonage_val = r["fax_vonage_email"] or "(empty)"
+                            st.caption(f"- {r['name']}: fax={fax_val}, vonage={vonage_val}")
+
+                    # Show practices with fax but no vonage
+                    missing = conn.execute(
+                        "SELECT COUNT(*) FROM practices "
+                        "WHERE fax IS NOT NULL AND fax != '' "
+                        "AND (fax_vonage_email IS NULL OR fax_vonage_email = '')"
+                    ).fetchone()[0]
+                    if missing > 0:
+                        st.warning(f"{missing} practices have fax but no Vonage email. Click **Fix All Vonage Fax Emails** above.")
+
+                    conn.close()
+                except Exception as e:
+                    st.error(f"Diagnostic error: {e}")
+        else:
+            st.caption("Import data first.")
+
+        st.markdown("---")
+        st.markdown("#### Re-Import Fax Numbers")
+        st.caption("Upload your Excel file to re-extract fax numbers and update Vonage emails without deleting other data.")
+        reimport_fax_file = st.file_uploader(
+            "Upload Excel file for fax re-import",
+            type=["xlsx", "xls"],
+            key="reimport_fax_upload",
+        )
+        if reimport_fax_file is not None and db_exists():
+            if st.button("Re-Import Fax Numbers", type="primary"):
+                with st.spinner("Re-importing fax numbers..."):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                        tmp.write(reimport_fax_file.getvalue())
+                        tmp_path = tmp.name
+                    try:
+                        import openpyxl
+                        from data_import import (
+                            parse_fax_number, parse_phone_number,
+                            convert_fax_to_vonage_email, _detect_columns,
+                        )
+                        from database import get_connection
+
+                        wb2 = openpyxl.load_workbook(tmp_path)
+                        ws2 = wb2["Full List"]
+                        col_map = _detect_columns(ws2)
+
+                        conn = get_connection()
+                        practices = conn.execute("SELECT id, name FROM practices").fetchall()
+                        name_to_id = {r["name"].strip().lower(): r["id"] for r in practices}
+
+                        updated = 0
+                        for row in range(2, ws2.max_row + 1):
+                            pname = ws2.cell(row, col_map["practice_name"]).value
+                            contact = ws2.cell(row, col_map["contact_info"]).value
+                            if not pname or not contact:
+                                continue
+                            pname_key = str(pname).strip().lower()
+                            pid = name_to_id.get(pname_key)
+                            if not pid:
+                                continue
+                            contact_str = str(contact)
+                            fax = parse_fax_number(contact_str)
+                            phone = parse_phone_number(contact_str)
+                            if fax:
+                                vonage = convert_fax_to_vonage_email(fax)
+                                updates = {"fax": fax, "fax_vonage_email": vonage}
+                                if phone:
+                                    updates["phone"] = phone
+                                sets = ", ".join(f"{k}=?" for k in updates)
+                                conn.execute(
+                                    f"UPDATE practices SET {sets} WHERE id=?",
+                                    list(updates.values()) + [pid],
+                                )
+                                updated += 1
+                        conn.commit()
+                        conn.close()
+                        wb2.close()
+                    finally:
+                        os.unlink(tmp_path)
+
+                st.success(f"Updated fax numbers for {updated} practices")
+                # Save to GitHub
+                try:
+                    from database_persistence import save_database_to_github
+                    gh_result = save_database_to_github()
+                    if gh_result["success"]:
+                        st.success("Database saved to GitHub!")
+                except Exception:
+                    pass
+
+        st.markdown("---")
         st.markdown("#### Location Zip Codes")
         st.markdown("**Huntsville Zips:**")
         st.text(", ".join(config.get("huntsville_zips", [])))

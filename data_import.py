@@ -96,6 +96,47 @@ def extract_zip(address: str) -> str:
     return match.group(1) if match else ""
 
 
+def _detect_columns(ws) -> dict:
+    """Read header row and map column names to indices.
+
+    Falls back to positional defaults if headers aren't recognized.
+    """
+    header_map = {}
+    for col in range(1, ws.max_column + 1):
+        val = ws.cell(1, col).value
+        if val:
+            header_map[str(val).strip().lower()] = col
+
+    # Map known header names to our field names
+    aliases = {
+        "practice_name": ["practice name", "practice", "name", "office name", "clinic name"],
+        "address": ["address", "location", "office address"],
+        "contact_info": ["contact information", "contact info", "phone/fax", "phone fax", "contact"],
+        "providers": ["providers", "provider", "doctors", "physician"],
+        "details": ["details", "notes", "detail"],
+        "next_followup": ["next follow up", "next followup", "follow up", "followup"],
+        "last_contact": ["last contact date", "last contact", "last contacted"],
+    }
+
+    col_map = {}
+    for field, names in aliases.items():
+        for name in names:
+            if name in header_map:
+                col_map[field] = header_map[name]
+                break
+
+    # Fallback: positional mapping based on Excel structure (Col 1-based)
+    col_map.setdefault("practice_name", 1)
+    col_map.setdefault("address", 2)
+    col_map.setdefault("contact_info", 3)
+    col_map.setdefault("providers", 4)
+    col_map.setdefault("details", 5)
+    col_map.setdefault("next_followup", 6)
+    col_map.setdefault("last_contact", 8)
+
+    return col_map
+
+
 def import_excel(excel_path: str = None) -> dict:
     """Import the Excel file into the database. Returns import stats."""
     config = load_config()
@@ -110,7 +151,9 @@ def import_excel(excel_path: str = None) -> dict:
 
     wb = openpyxl.load_workbook(excel_path)
     ws = wb["Full List"]
-    vonage_domain = config.get("vonage_domain", "fax.vonagebusiness.com")
+
+    # Detect column layout from headers
+    col_map = _detect_columns(ws)
 
     stats = {
         "practices_imported": 0,
@@ -119,18 +162,19 @@ def import_excel(excel_path: str = None) -> dict:
         "rows_processed": 0,
         "skipped_rows": 0,
         "backup_path": backup_path,
+        "column_map": {k: v for k, v in col_map.items()},
     }
 
     current_practice_name = None
 
     for row in range(2, ws.max_row + 1):
-        practice_name = ws.cell(row, 2).value
-        address = ws.cell(row, 3).value
-        contact_info = ws.cell(row, 4).value
-        providers_text = ws.cell(row, 5).value
-        details = ws.cell(row, 6).value
-        next_followup = ws.cell(row, 7).value
-        last_contact = ws.cell(row, 9).value
+        practice_name = ws.cell(row, col_map["practice_name"]).value
+        address = ws.cell(row, col_map["address"]).value
+        contact_info = ws.cell(row, col_map["contact_info"]).value
+        providers_text = ws.cell(row, col_map["providers"]).value
+        details = ws.cell(row, col_map["details"]).value
+        next_followup = ws.cell(row, col_map["next_followup"]).value
+        last_contact = ws.cell(row, col_map["last_contact"]).value
 
         # Skip completely empty rows
         if not practice_name and not address and not contact_info and not providers_text:
