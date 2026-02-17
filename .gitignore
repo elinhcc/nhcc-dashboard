@@ -19,6 +19,9 @@ env/
 # Backups
 backups/
 
+# Uploaded flyers (stored in GitHub via API, not committed directly)
+uploaded_flyers/
+
 # Secrets / credentials
 .env
 

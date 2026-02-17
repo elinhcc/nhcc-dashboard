@@ -212,6 +212,14 @@ def import_excel(excel_path: str = None) -> dict:
             stats["providers_imported"] += 1
 
     wb.close()
+
+    # Auto-save database to GitHub after successful import
+    try:
+        from database_persistence import save_database_to_github
+        save_database_to_github()
+    except Exception:
+        pass
+
     return stats
 
 

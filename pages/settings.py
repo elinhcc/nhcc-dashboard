@@ -33,8 +33,8 @@ def show_settings():
     if _is_cloud():
         st.info("Running on Streamlit Cloud — sensitive settings (Graph API credentials, password) are managed via the Secrets dashboard. Config.json changes may not persist.")
 
-    tab_data, tab_general, tab_paths, tab_team, tab_graph, tab_password, tab_mgmt = st.tabs([
-        "Data Import", "General", "File Paths", "Team Members",
+    tab_data, tab_flyers, tab_cloud, tab_general, tab_paths, tab_team, tab_graph, tab_password, tab_mgmt = st.tabs([
+        "Data Import", "Manage Flyers", "Cloud Setup", "General", "File Paths", "Team Members",
         "Email (Graph API)", "Password", "Data Management",
     ])
 
@@ -92,6 +92,15 @@ def show_settings():
                 col2.metric("Providers Imported", stats["providers_imported"])
                 col3.metric("Fax Numbers Found", stats["fax_numbers_found"])
 
+                # Auto-save to GitHub if configured
+                try:
+                    from database_persistence import save_database_to_github
+                    result = save_database_to_github()
+                    if result["success"]:
+                        st.success("Database automatically saved to GitHub cloud storage!")
+                except Exception:
+                    pass
+
         # Download existing database
         st.markdown("---")
         st.markdown("#### Download Database Backup")
@@ -106,6 +115,147 @@ def show_settings():
                 )
         else:
             st.caption("No database file exists yet.")
+
+    # ── Manage Flyers ─────────────────────────────────────────────────
+    with tab_flyers:
+        st.markdown("### Upload & Manage Flyers")
+        st.markdown("Upload flyer files (PDF, PNG, JPG, DOCX) to use in Flyer Campaigns.")
+
+        from flyer_management import (
+            ensure_flyers_dir, get_uploaded_flyers,
+            save_flyer_to_github, delete_flyer_from_github, FLYERS_DIR,
+        )
+
+        # Upload new flyer
+        flyer_file = st.file_uploader(
+            "Upload a flyer file",
+            type=["pdf", "png", "jpg", "jpeg", "docx"],
+            key="flyer_upload",
+        )
+        if flyer_file is not None:
+            if st.button("Upload Flyer", type="primary"):
+                ensure_flyers_dir()
+                file_bytes = flyer_file.getvalue()
+                local_path = os.path.join(FLYERS_DIR, flyer_file.name)
+                with open(local_path, "wb") as f:
+                    f.write(file_bytes)
+                st.success(f"Saved locally: {flyer_file.name}")
+
+                # Also save to GitHub
+                result = save_flyer_to_github(flyer_file.name, file_bytes)
+                if result["success"]:
+                    st.success(f"Backed up to GitHub: {flyer_file.name}")
+                else:
+                    st.warning(f"Local save OK, but GitHub backup failed: {result['message']}")
+                st.rerun()
+
+        # List existing flyers
+        st.markdown("---")
+        st.markdown("#### Available Flyers")
+        flyers = get_uploaded_flyers()
+        if not flyers:
+            st.info("No flyers uploaded yet. Use the uploader above to add flyer files.")
+        else:
+            for flyer in flyers:
+                col1, col2, col3 = st.columns([4, 1, 1])
+                col1.text(f"{flyer['name']}  ({flyer['size_kb']} KB)")
+                with col2:
+                    with open(flyer["path"], "rb") as f:
+                        st.download_button(
+                            "Download",
+                            data=f,
+                            file_name=flyer["name"],
+                            key=f"dl_{flyer['name']}",
+                        )
+                with col3:
+                    if st.button("Delete", key=f"del_{flyer['name']}"):
+                        os.remove(flyer["path"])
+                        delete_flyer_from_github(flyer["name"])
+                        st.success(f"Deleted {flyer['name']}")
+                        st.rerun()
+
+    # ── Cloud Setup ───────────────────────────────────────────────────
+    with tab_cloud:
+        st.markdown("### Cloud Persistence Setup")
+        st.markdown(
+            "Configure GitHub as a cloud storage backend so your database and "
+            "flyers persist across Streamlit Cloud restarts."
+        )
+
+        # Check current status
+        _gh_connected = False
+        try:
+            from database_persistence import get_github_config
+            gh = get_github_config()
+            if gh:
+                st.success(f"GitHub connected: **{gh['repo']}**")
+                _gh_connected = True
+            else:
+                st.warning("GitHub not configured yet. Follow the steps below.")
+        except Exception:
+            st.warning("GitHub not configured yet.")
+
+        with st.expander("How to set up GitHub persistence", expanded=not _gh_connected):
+            st.markdown("""
+            #### Step 1: Create a GitHub Personal Access Token
+
+            1. Go to **github.com** > Settings > Developer settings > Personal access tokens > **Tokens (classic)**
+            2. Click **Generate new token (classic)**
+            3. Name: `nhcc-dashboard-persistence`
+            4. Expiration: Choose an appropriate duration
+            5. Scopes: Check **repo** (full control of private repositories)
+            6. Click **Generate token** and **copy it immediately**
+
+            #### Step 2: Add secrets to Streamlit Cloud
+
+            1. Go to your app on **share.streamlit.io**
+            2. Click **Settings** (gear icon) > **Secrets**
+            3. Add the following to the secrets text area:
+
+            ```toml
+            [github]
+            token = "ghp_YOUR_TOKEN_HERE"
+            repo = "elinhcc/nhcc-dashboard"
+            ```
+
+            4. Click **Save**. The app will reboot with persistence enabled.
+
+            #### Step 3: Verify
+
+            After the app restarts, come back to this tab. You should see
+            a green "GitHub connected" message above.
+            """)
+
+        st.markdown("---")
+        st.markdown("#### Manual Database Backup")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save Database to GitHub", type="primary"):
+                try:
+                    from database_persistence import save_database_to_github
+                    with st.spinner("Saving to GitHub..."):
+                        result = save_database_to_github()
+                    if result["success"]:
+                        st.success(result["message"])
+                    else:
+                        st.error(result["message"])
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+        with col2:
+            if st.button("Restore Database from GitHub"):
+                try:
+                    from database_persistence import load_database_from_github
+                    with st.spinner("Restoring from GitHub..."):
+                        result = load_database_from_github()
+                    if result["success"]:
+                        st.success(result["message"])
+                        st.rerun()
+                    else:
+                        st.error(result["message"])
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
     # ── General ──────────────────────────────────────────────────────
     with tab_general:

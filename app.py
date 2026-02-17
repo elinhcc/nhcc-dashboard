@@ -236,6 +236,20 @@ def check_login():
 
 
 def main():
+    # Restore database from GitHub if running on cloud and no local DB exists
+    try:
+        from database_persistence import auto_restore_database
+        auto_restore_database()
+    except Exception:
+        pass
+
+    # Restore flyers from GitHub if running on cloud
+    try:
+        from flyer_management import load_flyers_from_github
+        load_flyers_from_github()
+    except Exception:
+        pass
+
     # Initialize database (safe — creates schema if DB doesn't exist yet)
     try:
         init_db()

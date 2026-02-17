@@ -29,8 +29,22 @@ FLYER_EMAIL_BODY = """\
 
 
 def _get_available_flyers():
-    """List flyer files from the configured folder (no COM dependency)."""
+    """List flyer files from uploaded_flyers directory (cloud-compatible).
+
+    Falls back to the legacy local flyer_folder if no uploaded flyers exist.
+    """
     import os
+
+    # Primary: uploaded flyers (cloud-compatible)
+    try:
+        from flyer_management import get_uploaded_flyers
+        flyers = get_uploaded_flyers()
+        if flyers:
+            return flyers
+    except Exception:
+        pass
+
+    # Fallback: legacy local folder from config
     config = load_config()
     folder = config.get("flyer_folder", "")
     if not folder or not os.path.exists(folder):
@@ -122,7 +136,7 @@ def show_flyer_campaigns():
         st.markdown("### 1. Select Flyer")
         flyers = _get_available_flyers()
         if not flyers:
-            st.error("No flyers found. Add PDF/PNG/DOCX files to the Flyers folder.")
+            st.error("No flyers found. Go to **Settings > Manage Flyers** to upload PDF/PNG/DOCX files.")
             return
 
         flyer_options = {f["name"]: f["path"] for f in flyers}
