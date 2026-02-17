@@ -1,7 +1,8 @@
-"""Settings page: app configuration, paths, team members, password, Graph API credentials."""
+"""Settings page: data import, app configuration, paths, team members, password, Graph API credentials."""
 import streamlit as st
 import os
-from utils import load_config, save_config
+import tempfile
+from utils import load_config, save_config, is_cloud, db_exists
 
 
 def _is_cloud():
@@ -32,10 +33,79 @@ def show_settings():
     if _is_cloud():
         st.info("Running on Streamlit Cloud — sensitive settings (Graph API credentials, password) are managed via the Secrets dashboard. Config.json changes may not persist.")
 
-    tab_general, tab_paths, tab_team, tab_graph, tab_password, tab_data = st.tabs([
-        "General", "File Paths", "Team Members",
+    tab_data, tab_general, tab_paths, tab_team, tab_graph, tab_password, tab_mgmt = st.tabs([
+        "Data Import", "General", "File Paths", "Team Members",
         "Email (Graph API)", "Password", "Data Management",
     ])
+
+    # ── Data Import (first tab — most important for cloud) ────────────
+    with tab_data:
+        st.markdown("### Import Provider Data")
+        st.markdown("Upload your Excel file to create or update the database.")
+
+        # Database status
+        st.markdown("#### Database Status")
+        try:
+            if db_exists():
+                from database import get_connection
+                conn = get_connection()
+                practice_count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
+                provider_count = conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0]
+                conn.close()
+                st.success(f"Database loaded: **{practice_count}** practices, **{provider_count}** providers")
+            else:
+                st.warning("No data loaded yet. Upload an Excel file below to get started.")
+        except Exception:
+            st.warning("No data loaded yet. Upload an Excel file below to get started.")
+
+        st.markdown("---")
+
+        # File uploader
+        uploaded_file = st.file_uploader(
+            "Upload Excel file (.xlsx / .xls)",
+            type=["xlsx", "xls"],
+            key="settings_upload",
+        )
+
+        if uploaded_file is not None:
+            st.info(f"File ready: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+
+            if st.button("Import Data", type="primary", use_container_width=True):
+                with st.spinner("Importing data... This may take a moment."):
+                    # Save uploaded file to temp location
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = tmp.name
+
+                    try:
+                        from database import init_db
+                        init_db()
+                        from data_import import import_excel
+                        stats = import_excel(tmp_path)
+                    finally:
+                        os.unlink(tmp_path)
+
+                st.balloons()
+                st.success("Import complete!")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Practices Imported", stats["practices_imported"])
+                col2.metric("Providers Imported", stats["providers_imported"])
+                col3.metric("Fax Numbers Found", stats["fax_numbers_found"])
+
+        # Download existing database
+        st.markdown("---")
+        st.markdown("#### Download Database Backup")
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "providers.db")
+        if os.path.exists(db_path):
+            with open(db_path, "rb") as f:
+                st.download_button(
+                    "Download Database Backup",
+                    data=f,
+                    file_name=f"providers_backup_{__import__('datetime').datetime.now().strftime('%Y%m%d')}.db",
+                    mime="application/octet-stream",
+                )
+        else:
+            st.caption("No database file exists yet.")
 
     # ── General ──────────────────────────────────────────────────────
     with tab_general:
@@ -62,20 +132,22 @@ def show_settings():
     # ── File Paths ───────────────────────────────────────────────────
     with tab_paths:
         st.markdown("### File Paths")
+        if is_cloud():
+            st.info("File paths are not used on Streamlit Cloud. Use the **Data Import** tab to upload files instead.")
         excel_path = st.text_input("Excel File Path", value=config.get("excel_path", ""))
         flyer_folder = st.text_input("Flyer Folder Path", value=config.get("flyer_folder", ""))
 
         col1, col2 = st.columns(2)
         with col1:
-            if os.path.exists(excel_path):
+            if excel_path and os.path.exists(excel_path):
                 st.success("Excel file found")
             else:
-                st.error("Excel file not found")
+                st.warning("Excel file not found (expected on cloud)")
         with col2:
-            if os.path.exists(flyer_folder):
+            if flyer_folder and os.path.exists(flyer_folder):
                 st.success("Flyer folder found")
             else:
-                st.error("Flyer folder not found")
+                st.warning("Flyer folder not found (expected on cloud)")
 
         if st.button("Save Path Settings", type="primary"):
             config["excel_path"] = excel_path
@@ -265,64 +337,110 @@ def show_settings():
             st.warning("No password is set. Anyone can access the app.")
 
     # ── Data Management ──────────────────────────────────────────────
-    with tab_data:
+    with tab_mgmt:
         st.markdown("### Data Management")
 
         st.markdown("#### Re-import Excel Data")
-        st.warning("This will clear all existing data and re-import from the Excel file.")
-        if st.button("Re-import from Excel"):
-            st.session_state["confirm_reimport"] = True
+        st.warning("This will clear all existing data and re-import from an Excel file.")
 
-        if st.session_state.get("confirm_reimport", False):
-            st.error("Are you sure? This will delete all existing data!")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Yes, Re-import", type="primary"):
-                    from database import get_connection
-                    conn = get_connection()
-                    tables = ["flyer_recipients", "flyer_campaigns", "cookie_visits",
-                              "thank_you_letters", "call_attempts", "lunch_tracking",
-                              "contact_log", "provider_history", "providers", "practices"]
-                    for t in tables:
-                        conn.execute(f"DELETE FROM {t}")
-                    conn.commit()
-                    conn.close()
+        reimport_file = st.file_uploader(
+            "Upload Excel file for re-import",
+            type=["xlsx", "xls"],
+            key="reimport_upload",
+        )
 
-                    from data_import import import_excel
-                    stats = import_excel()
-                    st.session_state["confirm_reimport"] = False
-                    st.success(f"Re-imported: {stats['practices_imported']} practices, {stats['providers_imported']} providers")
-                    st.rerun()
-            with col2:
-                if st.button("Cancel"):
-                    st.session_state["confirm_reimport"] = False
-                    st.rerun()
+        if reimport_file is not None:
+            if st.button("Re-import from Uploaded File"):
+                st.session_state["confirm_reimport_upload"] = True
 
+            if st.session_state.get("confirm_reimport_upload", False):
+                st.error("Are you sure? This will delete all existing data!")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Yes, Re-import", type="primary", key="confirm_reimport_yes"):
+                        with st.spinner("Re-importing..."):
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                                tmp.write(reimport_file.getvalue())
+                                tmp_path = tmp.name
+                            try:
+                                from database import get_connection, init_db
+                                init_db()
+                                conn = get_connection()
+                                tables = ["flyer_recipients", "flyer_campaigns", "cookie_visits",
+                                          "thank_you_letters", "call_attempts", "lunch_tracking",
+                                          "contact_log", "provider_history", "providers", "practices",
+                                          "events", "follow_ups"]
+                                for t in tables:
+                                    try:
+                                        conn.execute(f"DELETE FROM {t}")
+                                    except Exception:
+                                        pass
+                                conn.commit()
+                                conn.close()
+
+                                from data_import import import_excel
+                                stats = import_excel(tmp_path)
+                            finally:
+                                os.unlink(tmp_path)
+                        st.session_state["confirm_reimport_upload"] = False
+                        st.success(f"Re-imported: {stats['practices_imported']} practices, {stats['providers_imported']} providers")
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel", key="confirm_reimport_no"):
+                        st.session_state["confirm_reimport_upload"] = False
+                        st.rerun()
+
+        # Legacy local file re-import (only if local path exists)
+        excel_path = config.get("excel_path", "")
+        if excel_path and os.path.exists(excel_path):
+            st.markdown("---")
+            st.markdown("#### Re-import from Local File")
+            if st.button("Re-import from Local Excel"):
+                st.session_state["confirm_reimport"] = True
+
+            if st.session_state.get("confirm_reimport", False):
+                st.error("Are you sure? This will delete all existing data!")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Yes, Re-import", type="primary", key="local_reimport_yes"):
+                        from database import get_connection
+                        conn = get_connection()
+                        tables = ["flyer_recipients", "flyer_campaigns", "cookie_visits",
+                                  "thank_you_letters", "call_attempts", "lunch_tracking",
+                                  "contact_log", "provider_history", "providers", "practices"]
+                        for t in tables:
+                            conn.execute(f"DELETE FROM {t}")
+                        conn.commit()
+                        conn.close()
+
+                        from data_import import import_excel
+                        stats = import_excel()
+                        st.session_state["confirm_reimport"] = False
+                        st.success(f"Re-imported: {stats['practices_imported']} practices, {stats['providers_imported']} providers")
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel", key="local_reimport_no"):
+                        st.session_state["confirm_reimport"] = False
+                        st.rerun()
+
+        st.markdown("---")
         st.markdown("#### Fix Vonage Fax Emails")
         st.caption(
             "Re-derives every practice's Vonage fax email from its fax number. "
             "Fixes invalid formats (parentheses, double underscores, etc.)."
         )
-        if st.button("Fix All Vonage Fax Emails", type="primary"):
-            with st.spinner("Fixing fax email formats..."):
-                from database import fix_all_vonage_emails
-                result = fix_all_vonage_emails()
-            st.success(f"Fixed {result['fixed']} fax email address(es)")
-            if result["errors"]:
-                st.warning(f"{len(result['errors'])} could not be parsed:")
-                for err in result["errors"]:
-                    st.caption(f"- {err}")
-
-        st.markdown("#### Backup Database")
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "providers.db")
-        if os.path.exists(db_path):
-            with open(db_path, "rb") as f:
-                st.download_button(
-                    "Download Database Backup",
-                    data=f,
-                    file_name=f"providers_backup_{__import__('datetime').datetime.now().strftime('%Y%m%d')}.db",
-                    mime="application/octet-stream",
-                )
+        if db_exists():
+            if st.button("Fix All Vonage Fax Emails", type="primary"):
+                with st.spinner("Fixing fax email formats..."):
+                    from database import fix_all_vonage_emails
+                    result = fix_all_vonage_emails()
+                st.success(f"Fixed {result['fixed']} fax email address(es)")
+                if result["errors"]:
+                    st.warning(f"{len(result['errors'])} could not be parsed:")
+                    for err in result["errors"]:
+                        st.caption(f"- {err}")
+        else:
+            st.caption("Import data first to use this feature.")
 
         st.markdown("#### Location Zip Codes")
         st.markdown("**Huntsville Zips:**")

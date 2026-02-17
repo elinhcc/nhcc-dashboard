@@ -2,19 +2,35 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from database import (
-    get_all_practices, get_lunches, update_lunch, add_lunch,
-    get_thank_yous, update_thank_you, add_thank_you,
-    get_providers_for_practice, add_contact_log,
-    add_call_attempt, get_call_attempts, add_cookie_visit,
-    get_contact_log, create_event, get_call_attempt_count,
-    add_follow_up,
-)
-from utils import get_overdue_items, days_since, format_phone_link, format_email_link
+from utils import db_exists
 
 
 def show_action_items():
     st.markdown("## Action Items & Follow-ups")
+
+    if not db_exists():
+        st.warning("No data loaded yet.")
+        st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
+        # Show empty tab structure
+        tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts = st.tabs([
+            "Overdue / Upcoming", "Lunch Tracking", "Thank You Letters",
+            "Cookie Visits", "Contact Queue",
+        ])
+        for tab in [tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts]:
+            with tab:
+                st.info("Import data to see action items.")
+        return
+
+    # Lazy imports — only when database exists (avoids crash when DB missing)
+    from database import (
+        get_all_practices, get_lunches, update_lunch, add_lunch,
+        get_thank_yous, update_thank_you, add_thank_you,
+        get_providers_for_practice, add_contact_log,
+        add_call_attempt, get_call_attempts, add_cookie_visit,
+        get_contact_log, create_event, get_call_attempt_count,
+        add_follow_up,
+    )
+    from utils import get_overdue_items, days_since, format_phone_link, format_email_link
 
     tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts = st.tabs([
         "Overdue / Upcoming",
@@ -402,6 +418,7 @@ def show_action_items():
 
 def _show_schedule_lunch_form(lunch):
     """Show inline lunch scheduling form within the workflow."""
+    from database import update_lunch, get_call_attempts, create_event
     with st.form(f"sched_form_{lunch['id']}"):
         st.markdown(f"#### Schedule Lunch — {lunch.get('practice_name')}")
         col_d, col_t = st.columns(2)
@@ -462,6 +479,7 @@ def _show_schedule_lunch_form(lunch):
 
 def _show_edit_lunch_form(lunch):
     """Show inline edit form for a scheduled lunch."""
+    from database import update_lunch
     with st.form(f"edit_lunch_form_{lunch['id']}"):
         st.markdown(f"#### Edit Lunch — {lunch.get('practice_name')}")
         sd = lunch.get('scheduled_date', '')
@@ -498,6 +516,8 @@ def _show_edit_lunch_form(lunch):
 
 def _show_complete_lunch_dialog(lunch):
     """Show completion dialog with follow-up scheduling."""
+    from database import (update_lunch, get_providers_for_practice, add_thank_you,
+                          add_contact_log, add_follow_up, create_event)
     st.markdown(f"#### Mark Lunch Completed — {lunch.get('practice_name')}")
     schedule_next = st.checkbox("Schedule next follow-up?", value=False, key=f"sn_{lunch['id']}")
     followup_type = None
@@ -588,6 +608,7 @@ def _show_complete_lunch_dialog(lunch):
 
 def _show_call_attempt_form(lunch):
     """Show call attempt logging form."""
+    from database import add_call_attempt, update_lunch
     with st.form(f"call_form_{lunch['id']}"):
         st.markdown("#### Log Call Attempt")
         call_date = st.date_input("Date", value=datetime.now(), key=f"cad_{lunch['id']}")

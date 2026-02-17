@@ -217,11 +217,14 @@ def import_excel(excel_path: str = None) -> dict:
 
 def get_import_status():
     """Check if data has been imported."""
-    conn = get_connection()
+    import os
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.db")
+    if not os.path.exists(db_path):
+        return False
     try:
+        conn = get_connection()
         count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
         conn.close()
         return count > 0
     except Exception:
-        conn.close()
         return False

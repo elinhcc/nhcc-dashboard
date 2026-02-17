@@ -6,10 +6,55 @@ from datetime import datetime, timedelta
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
+# Default config used when config.json is missing (e.g. Streamlit Cloud)
+_DEFAULT_CONFIG = {
+    "excel_path": "",
+    "flyer_folder": "",
+    "send_from_email": "office@nhcancerclinics.com",
+    "backup_folder": "backups",
+    "team_members": ["Robbie", "Kianah"],
+    "vonage_domain": "fax.vonagebusiness.com",
+    "app_password_hash": "",
+    "reminder_days": {"lunch_followup": 90, "cookie_visit": 60, "flyer_send": 30},
+    "huntsville_zips": [],
+    "woodlands_zips": [],
+    "microsoft_graph": {
+        "client_id": "", "client_secret": "", "tenant_id": "",
+        "sender_email": "office@nhcancerclinics.com",
+    },
+}
+
+
+def is_cloud():
+    """Return True when running on Streamlit Cloud (no local files expected)."""
+    return os.environ.get("STREAMLIT_SHARING_MODE") is not None or os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true"
+
+
+def db_exists():
+    """Return True if the SQLite database file exists and has at least one practice."""
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.db")
+    if not os.path.exists(db_path):
+        return False
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        return False
+
 
 def load_config():
-    with open(CONFIG_PATH, "r") as f:
-        config = json.load(f)
+    # Start with defaults
+    config = dict(_DEFAULT_CONFIG)
+    # Try loading config.json
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            file_config = json.load(f)
+        config.update(file_config)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
     # Overlay Streamlit Cloud secrets onto config
     try:
         import streamlit as st

@@ -2,9 +2,7 @@
 import streamlit as st
 from datetime import datetime, timedelta
 import calendar
-from database import get_lunches, get_contact_log, get_cookie_visits, get_flyer_campaigns
-from database import list_events, get_event, create_event, update_event, delete_event
-from database import get_all_practices, get_thank_yous
+from utils import db_exists
 
 # Color scheme per requirements:
 # Blue = Lunches, Green = Cookie Visits, Yellow = Flyers, Pink = Thank You Letters
@@ -31,6 +29,7 @@ def _color(event_type):
 @st.dialog("Event Details", width="large")
 def _view_event_dialog(event_id):
     """Modal popup showing event details with Edit / Delete / Mark Completed."""
+    from database import get_event, update_event, delete_event
     evt = get_event(event_id)
     if not evt:
         st.error("Event not found.")
@@ -147,6 +146,7 @@ def _view_event_dialog(event_id):
 @st.dialog("Create Event", width="large")
 def _create_event_dialog(date_str):
     """Modal popup for creating a new event on a given date."""
+    from database import get_all_practices, create_event
     st.markdown(f"### Add New Event — {date_str}")
 
     with st.form("create_event_form"):
@@ -216,6 +216,8 @@ def show_calendar():
     st.session_state.setdefault("cal_edit_mode", False)
     st.session_state.setdefault("cal_confirm_delete", False)
 
+    has_data = db_exists()
+
     year = st.session_state.cal_year
     month = st.session_state.cal_month
 
@@ -266,6 +268,9 @@ def show_calendar():
     month_name = calendar.month_name[month]
     st.markdown(f"### {month_name} {year}")
 
+    if not has_data:
+        st.info("No data loaded yet. Go to **Settings > Data Import** to upload your provider data.")
+
     # ── Legend ─────────────────────────────────────────────────────
     legend_items = [
         ("Lunches", "#007bff", "cal-event-blue"),
@@ -279,18 +284,19 @@ def show_calendar():
     st.markdown(legend_html, unsafe_allow_html=True)
 
     # ── + Add Event button ────────────────────────────────────────
-    add_col, export_col, _ = st.columns([1, 1, 4])
-    with add_col:
-        if st.button("+ Add Event", type="primary"):
-            today_str = f"{year}-{month:02d}-{min(datetime.now().day, calendar.monthrange(year, month)[1]):02d}"
-            st.session_state.active_event_date = today_str
-            st.session_state.active_event_id = None
-            st.rerun()
+    if has_data:
+        add_col, export_col, _ = st.columns([1, 1, 4])
+        with add_col:
+            if st.button("+ Add Event", type="primary"):
+                today_str = f"{year}-{month:02d}-{min(datetime.now().day, calendar.monthrange(year, month)[1]):02d}"
+                st.session_state.active_event_date = today_str
+                st.session_state.active_event_id = None
+                st.rerun()
 
     st.markdown("---")
 
-    # Gather events for the month
-    events = _gather_events(year, month)
+    # Gather events for the month (empty dict if no data)
+    events = _gather_events(year, month) if has_data else {}
 
     # Build calendar grid
     cal_obj = calendar.Calendar(firstweekday=6)  # Sunday start
@@ -364,8 +370,15 @@ def show_calendar():
             })
 
     # ICS export for all scheduled events
-    lunches_this_month = [l for l in get_lunches(status_filter="Scheduled")
-                          if (l.get("scheduled_date") or "")[:7] == f"{year}-{month:02d}"]
+    try:
+        if has_data:
+            from database import get_lunches
+            lunches_this_month = [l for l in get_lunches(status_filter="Scheduled")
+                                  if (l.get("scheduled_date") or "")[:7] == f"{year}-{month:02d}"]
+        else:
+            lunches_this_month = []
+    except Exception:
+        lunches_this_month = []
 
     exp_col1, exp_col2 = st.columns([1, 4])
     with exp_col1:
@@ -389,10 +402,11 @@ def show_calendar():
         st.info("No events this month.")
 
     # ── Render modals if active ───────────────────────────────────
-    if st.session_state.get("active_event_id"):
-        _view_event_dialog(st.session_state.active_event_id)
-    elif st.session_state.get("active_event_date"):
-        _create_event_dialog(st.session_state.active_event_date)
+    if has_data:
+        if st.session_state.get("active_event_id"):
+            _view_event_dialog(st.session_state.active_event_id)
+        elif st.session_state.get("active_event_date"):
+            _create_event_dialog(st.session_state.active_event_date)
 
 
 def _build_ics_for_month(year, month, lunches, events_dict):
@@ -465,49 +479,56 @@ def _gather_events(year: int, month: int) -> dict:
                 entry["id"] = eid
             events.setdefault(day, []).append(entry)
 
-    # Contacts (calls, emails, etc.)
-    contacts = get_contact_log(limit=500)
-    for c in contacts:
-        add_event(c.get("contact_date"), "Call",
-                  f"{c.get('contact_type', 'Contact')}: {c.get('practice_name', '')}")
-
-    # Lunches
-    lunches = get_lunches()
-    for l in lunches:
-        if l.get("scheduled_date"):
-            add_event(l["scheduled_date"], "Lunch",
-                      f"Lunch: {l.get('practice_name', '')} ({l.get('status', '')})")
-
-    # Cookie visits
-    cookies = get_cookie_visits()
-    for cv in cookies:
-        add_event(cv.get("visit_date"), "Cookie Visit",
-                  f"Cookies: {cv.get('practice_name', '')}")
-
-    # Flyer campaigns
-    campaigns = get_flyer_campaigns()
-    for fc in campaigns:
-        add_event(fc.get("sent_date"), "Flyer",
-                  f"Flyer: {fc.get('flyer_name', '')}")
-
-    # Thank you letters
     try:
-        practices = get_all_practices(status_filter="Active")
-        for p in practices:
-            tys = get_thank_yous(practice_id=p["id"], status_filter="Pending")
-            for ty in tys:
-                add_event(ty.get("created_at"), "Thank You Letter",
-                          f"Thank You: {p['name']}")
-    except Exception:
-        pass
+        from database import get_contact_log, get_lunches, get_cookie_visits, get_flyer_campaigns
+        from database import get_all_practices, get_thank_yous, list_events
 
-    # Custom events table
-    try:
-        evts = list_events(month=month, year=year)
-        for e in evts:
-            add_event(e.get("scheduled_date"), e.get("event_type", "Other"),
-                      e.get("label", ""), eid=e.get("id"))
+        # Contacts (calls, emails, etc.)
+        contacts = get_contact_log(limit=500)
+        for c in contacts:
+            add_event(c.get("contact_date"), "Call",
+                      f"{c.get('contact_type', 'Contact')}: {c.get('practice_name', '')}")
+
+        # Lunches
+        lunches = get_lunches()
+        for l in lunches:
+            if l.get("scheduled_date"):
+                add_event(l["scheduled_date"], "Lunch",
+                          f"Lunch: {l.get('practice_name', '')} ({l.get('status', '')})")
+
+        # Cookie visits
+        cookies = get_cookie_visits()
+        for cv in cookies:
+            add_event(cv.get("visit_date"), "Cookie Visit",
+                      f"Cookies: {cv.get('practice_name', '')}")
+
+        # Flyer campaigns
+        campaigns = get_flyer_campaigns()
+        for fc in campaigns:
+            add_event(fc.get("sent_date"), "Flyer",
+                      f"Flyer: {fc.get('flyer_name', '')}")
+
+        # Thank you letters
+        try:
+            practices = get_all_practices(status_filter="Active")
+            for p in practices:
+                tys = get_thank_yous(practice_id=p["id"], status_filter="Pending")
+                for ty in tys:
+                    add_event(ty.get("created_at"), "Thank You Letter",
+                              f"Thank You: {p['name']}")
+        except Exception:
+            pass
+
+        # Custom events table
+        try:
+            evts = list_events(month=month, year=year)
+            for e in evts:
+                add_event(e.get("scheduled_date"), e.get("event_type", "Other"),
+                          e.get("label", ""), eid=e.get("id"))
+        except Exception:
+            pass
+
     except Exception:
-        pass
+        pass  # No database available — return empty events
 
     return events

@@ -2,12 +2,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from database import (
-    get_all_practices, add_flyer_campaign, add_flyer_recipient,
-    get_flyer_campaigns, get_flyer_recipients, add_contact_log,
-    validate_vonage_email,
-)
-from utils import load_config, save_config
+from utils import load_config, save_config, db_exists
 
 # HTML email template used for flyer sends
 FLYER_EMAIL_BODY = """\
@@ -58,6 +53,23 @@ def _get_available_flyers():
 
 def show_flyer_campaigns():
     st.markdown("## Flyer Campaigns")
+
+    if not db_exists():
+        st.warning("No data loaded yet.")
+        st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
+        tab_send, tab_history = st.tabs(["Send Flyers", "Campaign History"])
+        with tab_send:
+            st.info("Import provider data to send flyers.")
+        with tab_history:
+            st.info("No campaigns sent yet.")
+        return
+
+    # Lazy imports
+    from database import (
+        get_all_practices, add_flyer_campaign, add_flyer_recipient,
+        get_flyer_campaigns, get_flyer_recipients, add_contact_log,
+        validate_vonage_email,
+    )
 
     tab_send, tab_history = st.tabs(["Send Flyers", "Campaign History"])
 

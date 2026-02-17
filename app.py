@@ -6,9 +6,9 @@ import sys
 # Ensure app directory is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from database import init_db
+from database import init_db, db_exists
 from data_import import get_import_status
-from utils import load_config
+from utils import load_config, is_cloud
 
 st.set_page_config(
     page_title="NHCC Provider Outreach",
@@ -236,8 +236,11 @@ def check_login():
 
 
 def main():
-    # Initialize database
-    init_db()
+    # Initialize database (safe — creates schema if DB doesn't exist yet)
+    try:
+        init_db()
+    except Exception:
+        pass  # DB will be created when user uploads data
 
     if not check_login():
         return
@@ -264,21 +267,24 @@ def main():
         st.markdown("---")
 
         # Quick stats in sidebar
-        if get_import_status():
-            from database import get_dashboard_stats
-            stats = get_dashboard_stats()
-            st.metric("Active Practices", stats["total_practices"])
-            st.metric("Pending Thank Yous", stats["pending_thank_yous"])
+        try:
+            if db_exists():
+                from database import get_dashboard_stats
+                stats = get_dashboard_stats()
+                st.metric("Active Practices", stats["total_practices"])
+                st.metric("Pending Thank Yous", stats["pending_thank_yous"])
+            else:
+                st.caption("No data loaded yet")
+        except Exception:
+            st.caption("No data loaded yet")
 
         st.markdown("---")
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
 
-    # Route to page
-    if not get_import_status():
-        show_import_page()
-    elif page == "📊 Dashboard":
+    # Route to page — always allow navigation, pages handle empty state
+    if page == "📊 Dashboard":
         from pages.dashboard import show_dashboard
         show_dashboard()
     elif page == "🏢 Providers":
@@ -301,21 +307,60 @@ def main():
         show_settings()
 
     # Render modal dialogs for contact/lunch/fax forms if active
-    from pages.providers import render_contact_modal, render_lunch_modal, render_fax_modal
-    render_contact_modal()
-    render_lunch_modal()
-    render_fax_modal()
+    try:
+        from pages.providers import render_contact_modal, render_lunch_modal, render_fax_modal
+        render_contact_modal()
+        render_lunch_modal()
+        render_fax_modal()
+    except Exception:
+        pass
 
 
 def show_import_page():
-    """Show the initial data import page."""
+    """Show the initial data import page — supports both local files and browser uploads."""
     st.markdown("## 📥 Initial Data Import")
     st.markdown("Welcome! Let's import your provider data from Excel to get started.")
 
     config = load_config()
-    excel_path = config["excel_path"]
+    excel_path = config.get("excel_path", "")
 
-    if os.path.exists(excel_path):
+    # Option 1: Upload via browser (works on cloud and local)
+    st.markdown("### Upload Excel File")
+    uploaded_file = st.file_uploader(
+        "Upload your provider Excel file (.xlsx / .xls)",
+        type=["xlsx", "xls"],
+        key="import_upload",
+    )
+    if uploaded_file is not None:
+        if st.button("🚀 Import Uploaded File", type="primary", use_container_width=True):
+            import tempfile
+            with st.spinner("Importing data... This may take a moment."):
+                # Save uploaded file to temp location
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    tmp_path = tmp.name
+                try:
+                    init_db()
+                    from data_import import import_excel
+                    stats = import_excel(tmp_path)
+                finally:
+                    os.unlink(tmp_path)
+
+            st.balloons()
+            st.success("Import complete!")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Practices Imported", stats["practices_imported"])
+            col2.metric("Providers Imported", stats["providers_imported"])
+            col3.metric("Fax Numbers Found", stats["fax_numbers_found"])
+
+            st.markdown("---")
+            if st.button("Continue to Dashboard →"):
+                st.rerun()
+        return
+
+    # Option 2: Local file path (works on local/desktop only)
+    if excel_path and os.path.exists(excel_path):
+        st.markdown("### Or Import from Local File")
         st.success(f"Found Excel file: `{os.path.basename(excel_path)}`")
 
         if st.button("🚀 Import Provider Data", type="primary", use_container_width=True):
@@ -330,15 +375,14 @@ def show_import_page():
             col2.metric("Providers Imported", stats["providers_imported"])
             col3.metric("Fax Numbers Found", stats["fax_numbers_found"])
 
-            if stats["backup_path"]:
+            if stats.get("backup_path"):
                 st.info(f"Backup saved to: `{stats['backup_path']}`")
 
             st.markdown("---")
             if st.button("Continue to Dashboard →"):
                 st.rerun()
-    else:
-        st.error(f"Excel file not found at: `{excel_path}`")
-        st.info("Update the path in Settings or place the file in the expected location.")
+    elif not uploaded_file:
+        st.info("Upload an Excel file above, or go to **Settings** to configure a local file path.")
 
 
 if __name__ == "__main__":

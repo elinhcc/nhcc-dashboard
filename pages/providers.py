@@ -2,22 +2,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from database import (
-    get_all_practices, get_practice, add_practice, update_practice,
-    search_practices, get_providers_for_practice, add_provider,
-    update_provider, move_provider, get_all_providers, get_provider,
-    delete_provider,
-    get_contact_log, add_contact_log, get_lunches, add_lunch, update_lunch,
-    add_call_attempt, get_call_attempts, get_cookie_visits, add_cookie_visit,
-    get_thank_yous, add_thank_you, update_thank_you,
-    get_call_attempt_count, get_last_contact,
-)
-from database import create_event, update_event
-from utils import (
-    relationship_score, score_color, score_label, categorize_location,
-    days_since, format_phone_link, format_email_link, format_fax_link,
-)
-from data_import import fax_to_vonage_email
+from utils import db_exists
 
 
 # ── Callback helpers (execute BEFORE page re-renders) ─────────────────
@@ -102,6 +87,8 @@ def _generate_ics(practice_name, scheduled_date, scheduled_time, restaurant,
 @st.dialog("Log Contact", width="large")
 def _contact_dialog(practice_id):
     """Centered modal popup for logging a contact."""
+    from database import (get_practice, get_contact_log, add_contact_log,
+                          get_call_attempt_count)
     practice = get_practice(practice_id)
     if not practice:
         st.error("Practice not found.")
@@ -246,14 +233,21 @@ def _contact_dialog(practice_id):
 
 def render_contact_modal():
     """Check if a contact modal should be shown and render it."""
+    if not db_exists():
+        return
     practice_id = st.session_state.get("active_contact_form")
     if practice_id:
+        from database import (get_practice, get_contact_log, add_contact_log,
+                              get_call_attempt_count)
         _contact_dialog(practice_id)
 
 
 @st.dialog("Schedule Lunch", width="large")
 def _lunch_dialog(practice_id):
     """Centered modal popup for scheduling a lunch."""
+    from database import (get_practice, get_providers_for_practice, get_lunches,
+                          add_lunch, add_contact_log, get_call_attempt_count,
+                          create_event, add_follow_up)
     practice = get_practice(practice_id)
     if not practice:
         st.error("Practice not found.")
@@ -360,7 +354,7 @@ def _lunch_dialog(practice_id):
                 # If schedule_next, create follow-up event + database record
                 if schedule_next:
                     try:
-                        from database import add_follow_up
+                        pass  # add_follow_up already imported above
                         # Determine date
                         if followup_interval == "Custom date" and custom_followup_date:
                             next_date = custom_followup_date.isoformat()
@@ -418,6 +412,8 @@ def _lunch_dialog(practice_id):
 
 def render_lunch_modal():
     """Check if a lunch modal should be shown and render it."""
+    if not db_exists():
+        return
     practice_id = st.session_state.get("active_lunch_form")
     if practice_id:
         _lunch_dialog(practice_id)
@@ -428,7 +424,7 @@ def _fax_dialog(practice_id):
     """Modal popup for sending a fax document via Graph API."""
     import os
     from utils import load_config
-    from database import validate_vonage_email
+    from database import validate_vonage_email, get_practice, add_contact_log
 
     practice = get_practice(practice_id)
     if not practice:
@@ -548,6 +544,8 @@ def _fax_dialog(practice_id):
 
 def render_fax_modal():
     """Check if a fax modal should be shown and render it."""
+    if not db_exists():
+        return
     practice_id = st.session_state.get("active_fax_form")
     if practice_id:
         _fax_dialog(practice_id)
@@ -556,7 +554,31 @@ def render_fax_modal():
 # ── Main page ─────────────────────────────────────────────────────────
 
 def show_providers():
-    st.markdown("## 🏢 Provider & Practice Management")
+    st.markdown("## Provider & Practice Management")
+
+    if not db_exists():
+        st.text_input("Search practices", placeholder="Name, address, phone...", disabled=True)
+        st.warning("No data loaded yet.")
+        st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
+        return
+
+    # Lazy imports — only when database exists
+    from database import (
+        get_all_practices, get_practice, add_practice, update_practice,
+        search_practices, get_providers_for_practice, add_provider,
+        update_provider, move_provider, get_all_providers, get_provider,
+        delete_provider,
+        get_contact_log, add_contact_log, get_lunches, add_lunch, update_lunch,
+        add_call_attempt, get_call_attempts, get_cookie_visits, add_cookie_visit,
+        get_thank_yous, add_thank_you, update_thank_you,
+        get_call_attempt_count, get_last_contact,
+    )
+    from database import create_event, update_event
+    from utils import (
+        relationship_score, score_color, score_label, categorize_location,
+        days_since, format_phone_link, format_email_link, format_fax_link,
+    )
+    from data_import import fax_to_vonage_email
 
     # Show success messages from sidebar form submissions
     if st.session_state.get("show_contact_success"):
@@ -890,6 +912,9 @@ def show_providers():
 
 def _show_edit_form(practice):
     """Show inline edit form for a practice."""
+    from database import update_practice
+    from utils import categorize_location
+    from data_import import fax_to_vonage_email
     with st.form(f"edit_form_{practice['id']}"):
         st.markdown("#### Edit Practice")
         name = st.text_input("Name", value=practice.get("name", ""))

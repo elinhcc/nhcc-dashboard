@@ -1,16 +1,8 @@
 """Analytics page: charts, reports, exports with comprehensive metrics."""
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, timedelta, date
-from database import (
-    get_all_practices, get_all_providers, get_contact_log,
-    get_lunches, get_cookie_visits, get_flyer_campaigns,
-    get_thank_yous, get_dashboard_stats, get_connection,
-    get_follow_ups,
-)
-from utils import relationship_score, score_label
+from utils import db_exists
 
 
 def _safe_metric(label, value, delta=None, delta_color="normal"):
@@ -24,6 +16,7 @@ def _safe_metric(label, value, delta=None, delta_color="normal"):
 
 def _get_month_count(table, date_col, ym, extra_where=""):
     """Count rows matching a year-month in a given table."""
+    from database import get_connection
     conn = get_connection()
     q = f"SELECT COUNT(*) FROM {table} WHERE strftime('%Y-%m', {date_col})=?"
     if extra_where:
@@ -44,6 +37,32 @@ def show_analytics():
         "Contact Analysis",
         "Export Data",
     ])
+
+    if not db_exists():
+        with tab_overview:
+            st.warning("No data loaded yet.")
+            st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
+            # Show empty metrics
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Active Practices", 0)
+            c2.metric("Active Providers", 0)
+            c3.metric("Contacts This Month", 0)
+            c4.metric("Flyers Sent (Month)", 0)
+        for tab in [tab_lunch_outreach, tab_call_email, tab_location, tab_contacts, tab_export]:
+            with tab:
+                st.info("Import data to see analytics.")
+        return
+
+    # Lazy imports — only when database exists
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from database import (
+        get_all_practices, get_all_providers, get_contact_log,
+        get_lunches, get_cookie_visits, get_flyer_campaigns,
+        get_thank_yous, get_dashboard_stats, get_connection,
+        get_follow_ups,
+    )
+    from utils import relationship_score, score_label
 
     now = datetime.now()
     this_ym = now.strftime("%Y-%m")

@@ -6,6 +6,19 @@ from datetime import datetime
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.db")
 
 
+def db_exists():
+    """Return True if the database file exists and has the practices table with data."""
+    if not os.path.exists(DB_PATH):
+        return False
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        return False
+
+
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
