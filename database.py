@@ -812,35 +812,42 @@ def list_events_by_month(year: int, month: int):
 
 
 def validate_vonage_email(email: str) -> bool:
-    """Return True if email matches 1XXXXXXXXXX@fax.vonagebusiness.com."""
+    """Return True if email matches Vonage fax format.
+
+    Accepts both formats:
+      1(XXX)XXXXXXX@fax.vonagebusiness.com  (parentheses)
+      1XXXXXXXXXX@fax.vonagebusiness.com     (plain digits)
+    """
     import re
     if not email:
         return False
-    return bool(re.match(r'^1\d{10}@fax\.vonagebusiness\.com$', email))
+    return bool(re.match(
+        r'^1(?:\(\d{3}\)\d{7}|\d{10})@fax\.vonagebusiness\.com$', email
+    ))
 
 
 def fix_all_vonage_emails() -> dict:
     """Re-derive every practice's fax_vonage_email from its fax column.
 
+    Uses convert_fax_to_vonage_email which produces format:
+    1(XXX)XXXXXXX@fax.vonagebusiness.com
+
     Returns dict with 'fixed' count and list of 'errors'.
     """
-    import re
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, name, fax, fax_vonage_email FROM practices "
         "WHERE fax IS NOT NULL AND fax != ''"
     ).fetchall()
 
-    from data_import import fax_to_vonage_email
-    from utils import load_config
-    domain = load_config().get("vonage_domain", "fax.vonagebusiness.com")
+    from data_import import convert_fax_to_vonage_email
 
     fixed = 0
     errors = []
     for r in rows:
         pid = r["id"]
         old_email = r["fax_vonage_email"] or ""
-        new_email = fax_to_vonage_email(r["fax"], domain)
+        new_email = convert_fax_to_vonage_email(r["fax"])
         if new_email and new_email != old_email:
             conn.execute(
                 "UPDATE practices SET fax_vonage_email=? WHERE id=?",
@@ -848,7 +855,6 @@ def fix_all_vonage_emails() -> dict:
             )
             fixed += 1
         elif not new_email and old_email:
-            # Fax couldn't be parsed - clear the invalid email
             conn.execute(
                 "UPDATE practices SET fax_vonage_email='' WHERE id=?",
                 (pid,),

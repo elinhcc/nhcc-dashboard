@@ -589,6 +589,14 @@ def show_settings():
                     st.warning(f"{len(result['errors'])} could not be parsed:")
                     for err in result["errors"]:
                         st.caption(f"- {err}")
+                # Save fixed database to GitHub
+                try:
+                    from database_persistence import save_database_to_github
+                    gh_result = save_database_to_github()
+                    if gh_result["success"]:
+                        st.success("Database saved to GitHub!")
+                except Exception:
+                    pass
         else:
             st.caption("Import data first to use this feature.")
 

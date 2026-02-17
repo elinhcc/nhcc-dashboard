@@ -149,7 +149,34 @@ def show_flyer_campaigns():
         # ── 2. Select Recipients ────────────────────────────────────
         st.markdown("### 2. Select Recipients")
         practices = get_all_practices(status_filter="Active")
-        fax_practices = [p for p in practices if p.get("fax_vonage_email")]
+
+        # On-the-fly fix: convert fax numbers to Vonage emails if missing
+        try:
+            from data_import import convert_fax_to_vonage_email
+            from database import update_practice
+            _fixed_any = False
+            for p in practices:
+                fax = p.get("fax", "")
+                vonage = p.get("fax_vonage_email", "")
+                if fax and not vonage:
+                    new_vonage = convert_fax_to_vonage_email(fax)
+                    if new_vonage:
+                        update_practice(p["id"], {"fax_vonage_email": new_vonage})
+                        p["fax_vonage_email"] = new_vonage
+                        _fixed_any = True
+            if _fixed_any:
+                try:
+                    from database_persistence import save_database_to_github
+                    save_database_to_github()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        fax_practices = [
+            p for p in practices
+            if p.get("fax_vonage_email") and validate_vonage_email(p.get("fax_vonage_email", ""))
+        ]
 
         st.caption(f"{len(fax_practices)} of {len(practices)} practices have fax/Vonage configured")
 

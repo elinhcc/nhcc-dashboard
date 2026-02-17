@@ -45,24 +45,25 @@ def parse_phone_number(contact_info: str) -> str:
     return ""
 
 
-def fax_to_vonage_email(fax_number: str, domain: str = "fax.vonagebusiness.com") -> str:
-    """Convert a fax number to Vonage email format: 1XXXXXXXXXX@fax.vonagebusiness.com.
+def convert_fax_to_vonage_email(fax_number) -> str:
+    """Convert a fax number to Vonage email format: 1(XXX)XXXXXXX@fax.vonagebusiness.com."""
+    if not fax_number or str(fax_number).strip() == '':
+        return ""
+    cleaned = re.sub(r'[^0-9]', '', str(fax_number))
+    if len(cleaned) < 10:
+        return ""
+    if len(cleaned) == 11 and cleaned[0] == '1':
+        cleaned = cleaned[1:]
+    elif len(cleaned) > 10:
+        cleaned = cleaned[-10:]
+    area_code = cleaned[:3]
+    local_number = cleaned[3:]
+    return f"1({area_code}){local_number}@fax.vonagebusiness.com"
 
-    Uses plain digits only (no parentheses) so the address is valid RFC 5321.
-    """
-    if not fax_number:
-        return ""
-    digits = re.sub(r'[^0-9]', '', str(fax_number))
-    if not digits:
-        return ""
-    # Strip leading 1 for 11-digit numbers then re-add for consistency
-    if len(digits) == 11 and digits[0] == "1":
-        digits = digits[1:]
-    elif len(digits) > 11:
-        digits = digits[-10:]
-    if len(digits) != 10:
-        return ""
-    return f"1{digits}@{domain}"
+
+def fax_to_vonage_email(fax_number: str, domain: str = "fax.vonagebusiness.com") -> str:
+    """Legacy wrapper — calls convert_fax_to_vonage_email."""
+    return convert_fax_to_vonage_email(fax_number)
 
 
 def parse_providers(providers_text: str) -> list:
@@ -151,7 +152,7 @@ def import_excel(excel_path: str = None) -> dict:
         contact_str = str(contact_info) if contact_info else ""
         fax = parse_fax_number(contact_str)
         phone = parse_phone_number(contact_str)
-        vonage_email = fax_to_vonage_email(fax, vonage_domain) if fax else ""
+        vonage_email = convert_fax_to_vonage_email(fax) if fax else ""
         zip_code = extract_zip(str(address) if address else "")
         location = categorize_location(str(address) if address else "")
 
@@ -212,6 +213,30 @@ def import_excel(excel_path: str = None) -> dict:
             stats["providers_imported"] += 1
 
     wb.close()
+
+    # Post-import fixup: ensure every practice with a fax number has a vonage email
+    try:
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT id, fax FROM practices "
+            "WHERE fax IS NOT NULL AND fax != '' "
+            "AND (fax_vonage_email IS NULL OR fax_vonage_email = '')"
+        ).fetchall()
+        fixed = 0
+        for r in rows:
+            vonage = convert_fax_to_vonage_email(r["fax"])
+            if vonage:
+                conn.execute(
+                    "UPDATE practices SET fax_vonage_email=? WHERE id=?",
+                    (vonage, r["id"]),
+                )
+                fixed += 1
+        conn.commit()
+        conn.close()
+        if fixed:
+            stats["vonage_emails_fixed"] = fixed
+    except Exception:
+        pass
 
     # Auto-save database to GitHub after successful import
     try:
