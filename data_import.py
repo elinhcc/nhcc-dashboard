@@ -48,33 +48,31 @@ def parse_phone_number(contact_info: str) -> str:
 def convert_fax_to_vonage_email(fax_number):
     """Convert fax number to Vonage email format.
 
-    CRITICAL: Keep the actual digits — do NOT replace with underscores.
+    Proven working format (from Outlook sent items):
+        12818667705@fax.vonagebusiness.com
+    i.e. plain digits only — 1 + 10-digit number, NO parentheses.
 
     Examples:
-        (936) 494-4012 -> 1(936)4944012@fax.vonagebusiness.com
+        (936) 494-4012  -> 19364944012@fax.vonagebusiness.com
+        281-866-7705    -> 12818667705@fax.vonagebusiness.com
+        1-832-560-2162  -> 18325602162@fax.vonagebusiness.com
     """
     if not fax_number:
         return None
     fax_str = str(fax_number).strip()
     if not fax_str or fax_str.lower() in ('nan', 'none', ''):
         return None
-    # CRITICAL: Remove everything EXCEPT digits — keep only 0-9.
-    # Do NOT use underscores or any replacement; just extract digits.
+    # Extract digits only
     cleaned = ''.join(c for c in fax_str if c.isdigit())
-    # Validate we have at least 10 digits
     if len(cleaned) < 10:
         return None
-    # Handle 11-digit numbers: remove leading 1
+    # Normalize to 10 digits (strip leading 1 from 11-digit numbers)
     if len(cleaned) == 11 and cleaned[0] == '1':
         cleaned = cleaned[1:]
     elif len(cleaned) > 10:
         cleaned = cleaned[-10:]
-    # Split into area code and local number
-    area_code = cleaned[0:3]
-    local_number = cleaned[3:10]
-    # Format as Vonage email: 1(###)#######@fax.vonagebusiness.com
-    vonage_email = f"1({area_code}){local_number}@fax.vonagebusiness.com"
-    return vonage_email
+    # Format: 1 + 10 digits + @fax.vonagebusiness.com  (NO parentheses)
+    return f"1{cleaned}@fax.vonagebusiness.com"
 
 
 def fax_to_vonage_email(fax_number: str, domain: str = "fax.vonagebusiness.com") -> str:

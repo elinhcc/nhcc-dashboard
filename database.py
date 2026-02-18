@@ -814,16 +814,13 @@ def list_events_by_month(year: int, month: int):
 def validate_vonage_email(email: str) -> bool:
     """Return True if email matches Vonage fax format.
 
-    Accepts both formats:
-      1(XXX)XXXXXXX@fax.vonagebusiness.com  (parentheses)
-      1XXXXXXXXXX@fax.vonagebusiness.com     (plain digits)
+    Correct format (plain digits, no parentheses):
+      1XXXXXXXXXX@fax.vonagebusiness.com
     """
     import re
     if not email:
         return False
-    return bool(re.match(
-        r'^1(?:\(\d{3}\)\d{7}|\d{10})@fax\.vonagebusiness\.com$', email
-    ))
+    return bool(re.match(r'^1\d{10}@fax\.vonagebusiness\.com$', email))
 
 
 def fix_all_vonage_emails() -> dict:
