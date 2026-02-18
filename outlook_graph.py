@@ -1,8 +1,42 @@
 """Microsoft Graph API client for sending emails via Outlook 365."""
 import os
+import json
 import base64
 import time
+import logging
 from typing import List, Dict, Optional
+
+log = logging.getLogger(__name__)
+
+
+def _parse_graph_error(response) -> Dict:
+    """Extract detailed error info from a Microsoft Graph API response.
+
+    Returns dict with keys: code, message, details, status_code, raw.
+    """
+    info: Dict = {
+        "status_code": response.status_code,
+        "code": "",
+        "message": "",
+        "details": "",
+        "raw": "",
+    }
+    try:
+        body = response.json()
+        err = body.get("error", {})
+        info["code"] = err.get("code", "")
+        info["message"] = err.get("message", "")
+        # Some Graph errors include innerError or details array
+        inner = err.get("innerError", {})
+        if inner:
+            info["details"] = json.dumps(inner, indent=2)
+        detail_list = err.get("details", [])
+        if detail_list:
+            info["details"] += "\n" + json.dumps(detail_list, indent=2)
+        info["raw"] = json.dumps(body, indent=2)
+    except Exception:
+        info["raw"] = response.text
+    return info
 
 
 class OutlookGraphAPI:
@@ -64,8 +98,20 @@ class OutlookGraphAPI:
 
         Returns:
             Dict with ``success`` bool and ``message`` or ``error``.
+            On failure also includes ``error_code``, ``error_details``,
+            ``error_raw``, and ``diagnostic`` for debugging.
         """
         import requests
+
+        # -- Diagnostic logging --
+        diag = {
+            "sender": sender,
+            "recipients": recipients,
+            "recipient_count": len(recipients),
+            "subject": subject,
+            "has_attachment": bool(attachment_path and os.path.exists(attachment_path)),
+        }
+        log.info("Graph API send_email diagnostic: %s", json.dumps(diag))
 
         try:
             token = self.get_access_token()
@@ -99,20 +145,67 @@ class OutlookGraphAPI:
                 ]
 
             endpoint = f"{self.graph_endpoint}/users/{sender}/sendMail"
+            log.info("POST %s  recipients=%s", endpoint, recipients)
             response = requests.post(endpoint, headers=headers, json=message)
 
             if response.status_code == 202:
+                log.info("Email sent OK to %s", recipients)
                 return {
                     "success": True,
                     "message": f"Email sent successfully to {', '.join(recipients)}",
+                    "diagnostic": diag,
                 }
+
+            # -- Parse detailed error from Graph API --
+            err_info = _parse_graph_error(response)
+            error_summary = (
+                f"HTTP {err_info['status_code']} | "
+                f"{err_info['code']}: {err_info['message']}"
+            )
+            log.error("Graph API error: %s", error_summary)
+            log.error("Full response: %s", err_info["raw"])
+
             return {
                 "success": False,
-                "error": f"HTTP {response.status_code}: {response.text}",
+                "error": error_summary,
+                "error_code": err_info["code"],
+                "error_details": err_info["details"],
+                "error_raw": err_info["raw"],
+                "diagnostic": diag,
             }
 
         except Exception as e:
-            return {"success": False, "error": f"Error sending email: {e}"}
+            log.exception("Exception in send_email")
+            return {
+                "success": False,
+                "error": f"Error sending email: {e}",
+                "diagnostic": diag,
+            }
+
+    def send_test_email(
+        self,
+        sender: str,
+        test_recipient: str,
+        subject: str = "NHCC Graph API Test",
+        body: str = "<html><body><p>This is a test email from NHCC Dashboard to verify Microsoft Graph API is working.</p></body></html>",
+        attachment_path: Optional[str] = None,
+    ) -> Dict:
+        """Send a test email to a regular email address (not fax) to verify Graph API works.
+
+        Use this to isolate whether a send failure is caused by the Graph API
+        configuration or by the Vonage fax email address / domain.
+        """
+        log.info("TEST MODE: sending to %s (instead of fax)", test_recipient)
+        result = self.send_email(
+            sender=sender,
+            recipients=[test_recipient],
+            subject=f"[TEST] {subject}",
+            body=body,
+            attachment_path=attachment_path,
+        )
+        result["test_mode"] = True
+        result["test_recipient"] = test_recipient
+        return result
 
     def send_batch_emails(
         self,
@@ -138,6 +231,10 @@ class OutlookGraphAPI:
                     "recipient": recipient,
                     "success": result["success"],
                     "message": result.get("message") or result.get("error"),
+                    "error_code": result.get("error_code", ""),
+                    "error_details": result.get("error_details", ""),
+                    "error_raw": result.get("error_raw", ""),
+                    "diagnostic": result.get("diagnostic", {}),
                 }
             )
             if i < len(recipients) - 1:

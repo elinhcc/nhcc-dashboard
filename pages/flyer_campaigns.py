@@ -252,6 +252,54 @@ def show_flyer_campaigns():
         with st.expander("Preview email body"):
             st.markdown(FLYER_EMAIL_BODY, unsafe_allow_html=True)
 
+        # ── Test Mode ──────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Diagnostic / Test Mode")
+        test_mode = st.checkbox(
+            "Enable TEST MODE (send to a regular email instead of fax)",
+            help="Use this to verify Graph API works before sending to Vonage fax addresses.",
+        )
+        test_email_addr = ""
+        if test_mode:
+            test_email_addr = st.text_input(
+                "Test recipient email (regular email, not fax)",
+                value=graph_config.get("sender_email", ""),
+                help="Sends to this address instead of fax numbers. Use your own email to verify delivery.",
+            )
+            st.warning(
+                "TEST MODE: Emails will be sent to the test address above, "
+                "NOT to any fax numbers. No campaign records will be created."
+            )
+
+            if st.button("Send Single Test Email", type="secondary"):
+                with st.spinner(f"Sending test to {test_email_addr}..."):
+                    flyer_path = flyer_options[selected_flyer] if selected_flyer else None
+                    result = outlook_api.send_test_email(
+                        sender=send_from,
+                        test_recipient=test_email_addr,
+                        subject=email_subject,
+                        attachment_path=flyer_path,
+                    )
+                if result["success"]:
+                    st.success(f"Test email sent to {test_email_addr}! Check your inbox.")
+                    st.info("This confirms Graph API is working. If fax sends fail, the issue is with the Vonage email address or domain.")
+                else:
+                    st.error(f"Test email FAILED: {result.get('error', 'Unknown')}")
+                    if result.get("error_code"):
+                        st.error(f"Error code: {result['error_code']}")
+                    if result.get("error_details"):
+                        with st.expander("Error details"):
+                            st.code(result["error_details"])
+                    if result.get("error_raw"):
+                        with st.expander("Full API response"):
+                            st.code(result["error_raw"])
+                    st.warning("Graph API itself is failing. Fix the API configuration before trying fax sends.")
+
+                with st.expander("Diagnostic info"):
+                    st.json(result.get("diagnostic", {}))
+
+        st.markdown("---")
+
         # Only allow sending valid recipients
         valid_selected = [
             p for p in selected_practices
@@ -261,7 +309,7 @@ def show_flyer_campaigns():
         if st.button(
             f"Send Flyers ({len(valid_selected)} valid recipients)",
             type="primary",
-            disabled=not valid_selected,
+            disabled=not valid_selected or test_mode,
         ):
             flyer_path = flyer_options[selected_flyer]
 
@@ -324,7 +372,14 @@ def show_flyer_campaigns():
                     })
                 else:
                     failed_count += 1
-                    fail_details.append(f"{recip['practice_name']}: {error_msg}")
+                    fail_details.append({
+                        "practice": recip["practice_name"],
+                        "vonage_email": recip["vonage_email"],
+                        "error": error_msg,
+                        "error_code": result.get("error_code", ""),
+                        "error_details": result.get("error_details", ""),
+                        "error_raw": result.get("error_raw", ""),
+                    })
 
                 import time
                 if i < len(recipients_info) - 1:
@@ -336,7 +391,18 @@ def show_flyer_campaigns():
             if fail_details:
                 st.markdown("**Failed sends:**")
                 for detail in fail_details:
-                    st.error(detail)
+                    st.error(f"{detail['practice']}: {detail['error']}")
+                    if detail.get("error_code") or detail.get("error_details"):
+                        with st.expander(f"Diagnostic: {detail['practice']} ({detail['vonage_email']})"):
+                            st.markdown(f"**Recipient:** `{detail['vonage_email']}`")
+                            if detail["error_code"]:
+                                st.markdown(f"**Error code:** `{detail['error_code']}`")
+                            if detail["error_details"]:
+                                st.markdown("**Error details:**")
+                                st.code(detail["error_details"])
+                            if detail["error_raw"]:
+                                st.markdown("**Full API response:**")
+                                st.code(detail["error_raw"])
 
     # ── Campaign History ─────────────────────────────────────────────
     with tab_history:

@@ -534,6 +534,20 @@ def _fax_dialog(practice_id):
                         st.rerun()
                     else:
                         st.error(f"Failed to send: {result.get('error', 'Unknown error')}")
+                        if result.get("error_code"):
+                            st.error(f"Error code: {result['error_code']}")
+                        with st.expander("Diagnostic details"):
+                            st.markdown(f"**Recipient:** `{fax_email}`")
+                            st.markdown(f"**Sender:** `{graph_config.get('sender_email', '')}`")
+                            if result.get("error_details"):
+                                st.markdown("**Error details:**")
+                                st.code(result["error_details"])
+                            if result.get("error_raw"):
+                                st.markdown("**Full API response:**")
+                                st.code(result["error_raw"])
+                            if result.get("diagnostic"):
+                                st.markdown("**Request diagnostic:**")
+                                st.json(result["diagnostic"])
                 except Exception as e:
                     st.error(f"Error: {e}")
 
