@@ -873,6 +873,80 @@ def fix_all_vonage_emails() -> dict:
     return {"fixed": fixed, "errors": errors}
 
 
+# ── Calendar Backfill Migration ───────────────────────────────────────
+
+def migrate_lunches_cookies_to_events() -> dict:
+    """Backfill the events table with any lunches / cookie visits that were
+    recorded in their tracking tables before the events table was the canonical
+    calendar source.  Safe to call repeatedly — skips records that already have
+    a matching events row (same type + practice + date)."""
+    conn = get_connection()
+    created = {"lunches": 0, "cookies": 0}
+
+    lunches = conn.execute("""
+        SELECT lt.id, lt.practice_id, lt.scheduled_date, lt.scheduled_time,
+               lt.status, pr.name AS practice_name
+        FROM lunch_tracking lt
+        JOIN practices pr ON lt.practice_id = pr.id
+        WHERE lt.scheduled_date IS NOT NULL
+    """).fetchall()
+
+    for l in lunches:
+        exists = conn.execute("""
+            SELECT id FROM events
+            WHERE event_type = 'Lunch'
+              AND practice_id = ?
+              AND date(scheduled_date) = date(?)
+        """, (l["practice_id"], l["scheduled_date"])).fetchone()
+        if not exists:
+            conn.execute("""
+                INSERT INTO events
+                    (practice_id, event_type, label, scheduled_date,
+                     scheduled_time, status, created_by)
+                VALUES (?, 'Lunch', ?, ?, ?, ?, 'migration')
+            """, (
+                l["practice_id"],
+                f"Lunch - {l['practice_name']}",
+                l["scheduled_date"],
+                l["scheduled_time"] or "12:00",
+                l["status"] or "Scheduled",
+            ))
+            created["lunches"] += 1
+
+    cookies = conn.execute("""
+        SELECT cv.id, cv.practice_id, cv.visit_date, cv.status,
+               pr.name AS practice_name
+        FROM cookie_visits cv
+        JOIN practices pr ON cv.practice_id = pr.id
+        WHERE cv.visit_date IS NOT NULL
+    """).fetchall()
+
+    for cv in cookies:
+        exists = conn.execute("""
+            SELECT id FROM events
+            WHERE event_type = 'Cookie Visit'
+              AND practice_id = ?
+              AND date(scheduled_date) = date(?)
+        """, (cv["practice_id"], cv["visit_date"])).fetchone()
+        if not exists:
+            conn.execute("""
+                INSERT INTO events
+                    (practice_id, event_type, label, scheduled_date,
+                     status, created_by)
+                VALUES (?, 'Cookie Visit', ?, ?, ?, 'migration')
+            """, (
+                cv["practice_id"],
+                f"Cookies - {cv['practice_name']}",
+                cv["visit_date"],
+                cv["status"] or "Completed",
+            ))
+            created["cookies"] += 1
+
+    conn.commit()
+    conn.close()
+    return created
+
+
 # ── Recurring Reminders ───────────────────────────────────────────────
 
 def create_recurring_reminder(data: dict) -> int:

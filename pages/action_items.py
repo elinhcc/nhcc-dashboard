@@ -301,6 +301,18 @@ def show_action_items():
                 if schedule_next and followup_interval == "Custom date" and custom_followup_date:
                     data["next_visit_date"] = custom_followup_date.isoformat()
                 vid = add_cookie_visit(data)
+                # Add to events table so visit shows on calendar with a clickable ID
+                try:
+                    create_event({
+                        "practice_id": practice_map[cookie_practice],
+                        "event_type": "Cookie Visit",
+                        "label": f"Cookies - {cookie_practice}",
+                        "scheduled_date": visit_date.isoformat(),
+                        "status": "Completed",
+                        "created_by": "ui",
+                    })
+                except Exception:
+                    pass
                 add_contact_log({
                     "practice_id": practice_map[cookie_practice],
                     "contact_type": "Cookie Visit",
@@ -577,8 +589,8 @@ def _show_complete_lunch_dialog(lunch):
                     "Next Lunch (6 months)": "Lunch",
                     "Cookie Visit (3 months)": "Cookie Visit",
                     "Follow-up Call": "Call",
-                    "Send Flyer": "Flyer",
-                    "Thank You Letter": "Thank You Letter",
+                    "Send Flyer": "Other",
+                    "Thank You Letter": "Other",
                     "Custom Activity": "Other",
                 }
                 evt_type = fu_map.get(followup_type, "Lunch") if followup_type else "Lunch"

@@ -367,8 +367,8 @@ def _lunch_dialog(practice_id):
                             "Next Lunch (6 months)": "Lunch",
                             "Cookie Visit (3 months)": "Cookie Visit",
                             "Follow-up Call": "Call",
-                            "Send Flyer": "Flyer",
-                            "Thank You Letter": "Thank You Letter",
+                            "Send Flyer": "Other",
+                            "Thank You Letter": "Other",
                             "Custom Activity": "Other",
                         }
                         evt_type = fu_type_map.get(followup_type, "Lunch") if followup_type else "Lunch"
@@ -518,17 +518,6 @@ def _fax_dialog(practice_id):
                         attachment_path=flyer_path,
                     )
                     if result["success"]:
-                        # Log fax contact
-                        add_contact_log({
-                            "practice_id": practice_id,
-                            "contact_type": "Fax Sent",
-                            "contact_date": datetime.now().isoformat(),
-                            "contact_method": "fax",
-                            "team_member": "Robbie",
-                            "outcome": "Sent Successfully",
-                            "fax_document": selected_doc,
-                            "notes": f"Fax sent: {selected_doc}",
-                        })
                         st.session_state.active_fax_form = None
                         st.session_state.show_contact_success = f"Fax sent to {practice['name']} ({selected_doc})"
                         st.rerun()

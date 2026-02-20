@@ -360,16 +360,6 @@ def show_flyer_campaigns():
 
                 if result["success"]:
                     sent_count += 1
-                    add_contact_log({
-                        "practice_id": recip["practice_id"],
-                        "contact_type": "Fax Sent",
-                        "contact_date": datetime.now().isoformat(),
-                        "contact_method": "fax",
-                        "team_member": "Robbie",
-                        "outcome": "Sent Successfully",
-                        "fax_document": selected_flyer,
-                        "notes": f"Flyer campaign: {selected_flyer}",
-                    })
                 else:
                     failed_count += 1
                     fail_details.append({
