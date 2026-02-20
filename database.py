@@ -182,6 +182,17 @@ def init_db():
     );
     """)
 
+    # recurring_reminders table for monthly calendar reminders
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS recurring_reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        day_of_month INTEGER NOT NULL DEFAULT 1,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     # follow_ups table for scheduled follow-up activities
     c.execute("""
     CREATE TABLE IF NOT EXISTS follow_ups (
@@ -860,6 +871,43 @@ def fix_all_vonage_emails() -> dict:
     conn.commit()
     conn.close()
     return {"fixed": fixed, "errors": errors}
+
+
+# ── Recurring Reminders ───────────────────────────────────────────────
+
+def create_recurring_reminder(data: dict) -> int:
+    conn = get_connection()
+    cols = ", ".join(data.keys())
+    placeholders = ", ".join(["?"] * len(data))
+    cur = conn.execute(
+        f"INSERT INTO recurring_reminders ({cols}) VALUES ({placeholders})",
+        list(data.values()),
+    )
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def get_recurring_reminders(active_only: bool = True) -> list:
+    conn = get_connection()
+    if active_only:
+        rows = conn.execute(
+            "SELECT * FROM recurring_reminders WHERE active=1 ORDER BY day_of_month, name"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM recurring_reminders ORDER BY day_of_month, name"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_recurring_reminder(reminder_id: int):
+    conn = get_connection()
+    conn.execute("DELETE FROM recurring_reminders WHERE id=?", (reminder_id,))
+    conn.commit()
+    conn.close()
 
 
 def cleanup_providers_date_like(delete=False):

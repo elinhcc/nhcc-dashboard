@@ -4,15 +4,13 @@ from datetime import datetime, timedelta
 import calendar
 from utils import db_exists
 
-# Color scheme per requirements:
-# Blue = Lunches, Green = Cookie Visits, Yellow = Flyers, Pink = Thank You Letters
+# Color scheme: Blue = Lunches, Green = Cookie Visits, Orange = Reminders
 EVENT_COLORS = {
-    "Lunch":            {"bg": "#007bff", "css": "cal-event-blue"},
-    "Cookie Visit":     {"bg": "#28a745", "css": "cal-event-green"},
-    "Flyer":            {"bg": "#ffc107", "css": "cal-event-yellow"},
-    "Thank You Letter": {"bg": "#e83e8c", "css": "cal-event-pink"},
-    "Call":             {"bg": "#6c757d", "css": "cal-event-gray"},
-    "Other":            {"bg": "#6c757d", "css": "cal-event-gray"},
+    "Lunch":        {"bg": "#007bff", "css": "cal-event-blue"},
+    "Cookie Visit": {"bg": "#28a745", "css": "cal-event-green"},
+    "Reminder":     {"bg": "#FF8C42", "css": "cal-event-orange"},
+    "Call":         {"bg": "#6c757d", "css": "cal-event-gray"},
+    "Other":        {"bg": "#6c757d", "css": "cal-event-gray"},
 }
 
 
@@ -57,7 +55,7 @@ def _view_event_dialog(event_id):
     # Edit mode toggle
     if st.session_state.get("cal_edit_mode"):
         with st.form("edit_event_form"):
-            etypes = ["Lunch", "Cookie Visit", "Call", "Flyer", "Thank You Letter", "Other"]
+            etypes = ["Lunch", "Cookie Visit", "Call", "Other"]
             try:
                 idx = etypes.index(etype) if etype in etypes else 0
             except Exception:
@@ -150,7 +148,7 @@ def _create_event_dialog(date_str):
     st.markdown(f"### Add New Event — {date_str}")
 
     with st.form("create_event_form"):
-        etypes = ["Lunch", "Cookie Visit", "Call", "Flyer", "Thank You Letter", "Other"]
+        etypes = ["Lunch", "Cookie Visit", "Call", "Other"]
         etype = st.selectbox("Event Type", etypes)
 
         label = st.text_input("Label / Description", placeholder="e.g. Lunch - ABC Medical")
@@ -205,6 +203,61 @@ def _create_event_dialog(date_str):
             st.rerun()
 
 
+@st.dialog("Manage Monthly Reminders", width="large")
+def _manage_reminders_dialog():
+    """Modal for creating and deleting recurring monthly reminders."""
+    from database import get_recurring_reminders, create_recurring_reminder, delete_recurring_reminder
+
+    st.markdown("### Existing Reminders")
+    reminders = get_recurring_reminders()
+    if reminders:
+        for r in reminders:
+            col_name, col_day, col_del = st.columns([4, 2, 1])
+            with col_name:
+                st.markdown(f"**{r['name']}**")
+            with col_day:
+                st.markdown(f"Day {r['day_of_month']} of every month")
+            with col_del:
+                if st.button("🗑", key=f"del_reminder_{r['id']}", help="Delete this reminder"):
+                    delete_recurring_reminder(r["id"])
+                    st.rerun()
+    else:
+        st.info("No recurring reminders set yet.")
+
+    st.markdown("---")
+    st.markdown("### Add New Reminder")
+    with st.form("create_reminder_form"):
+        name = st.text_input(
+            "Reminder Name",
+            value="Monthly Flyer Campaign Due",
+            placeholder="e.g. Monthly Flyer Campaign Due",
+        )
+        day = st.number_input(
+            "Day of Month",
+            min_value=1,
+            max_value=28,
+            value=1,
+            help="Choose 1–28 (use 28 to avoid end-of-month issues for short months)",
+        )
+        col_s, col_c = st.columns(2)
+        with col_s:
+            submitted = st.form_submit_button("Add Reminder", type="primary", use_container_width=True)
+        with col_c:
+            cancelled = st.form_submit_button("Close", use_container_width=True)
+
+        if submitted:
+            if name.strip():
+                create_recurring_reminder({"name": name.strip(), "day_of_month": int(day)})
+                st.success(f"Reminder '{name.strip()}' added — appears on day {day} of every month.")
+                st.rerun()
+            else:
+                st.error("Please enter a reminder name.")
+
+        if cancelled:
+            st.session_state.active_reminder_dialog = False
+            st.rerun()
+
+
 # ── Main page ────────────────────────────────────────────────────────
 
 def show_calendar():
@@ -215,6 +268,7 @@ def show_calendar():
     st.session_state.setdefault("cal_month", datetime.now().month)
     st.session_state.setdefault("cal_edit_mode", False)
     st.session_state.setdefault("cal_confirm_delete", False)
+    st.session_state.setdefault("active_reminder_dialog", False)
 
     has_data = db_exists()
 
@@ -275,21 +329,27 @@ def show_calendar():
     legend_items = [
         ("Lunches", "#007bff", "cal-event-blue"),
         ("Cookie Visits", "#28a745", "cal-event-green"),
-        ("Flyers", "#ffc107", "cal-event-yellow"),
-        ("Thank You Letters", "#e83e8c", "cal-event-pink"),
+        ("Reminders", "#FF8C42", "cal-event-orange"),
     ]
     legend_html = " &nbsp; ".join(
         f'<span class="{css}">{name}</span>' for name, _, css in legend_items
     )
     st.markdown(legend_html, unsafe_allow_html=True)
 
-    # ── + Add Event button ────────────────────────────────────────
+    # ── + Add Event / Add Reminder buttons ───────────────────────
     if has_data:
-        add_col, export_col, _ = st.columns([1, 1, 4])
+        add_col, remind_col, _ = st.columns([1, 1, 4])
         with add_col:
             if st.button("+ Add Event", type="primary"):
                 today_str = f"{year}-{month:02d}-{min(datetime.now().day, calendar.monthrange(year, month)[1]):02d}"
                 st.session_state.active_event_date = today_str
+                st.session_state.active_event_id = None
+                st.session_state.active_reminder_dialog = False
+                st.rerun()
+        with remind_col:
+            if st.button("+ Add Reminder"):
+                st.session_state.active_reminder_dialog = True
+                st.session_state.active_event_date = None
                 st.session_state.active_event_id = None
                 st.rerun()
 
@@ -407,6 +467,8 @@ def show_calendar():
             _view_event_dialog(st.session_state.active_event_id)
         elif st.session_state.get("active_event_date"):
             _create_event_dialog(st.session_state.active_event_date)
+        elif st.session_state.get("active_reminder_dialog"):
+            _manage_reminders_dialog()
 
 
 def _build_ics_for_month(year, month, lunches, events_dict):
@@ -464,7 +526,12 @@ def _build_ics_for_month(year, month, lunches, events_dict):
 
 
 def _gather_events(year: int, month: int) -> dict:
-    """Gather all events for a given month. Returns {date_str: [event_dicts]}."""
+    """Gather all events for a given month. Returns {date_str: [event_dicts]}.
+
+    Only Lunches, Cookie Visits, manually-created Events, and Recurring Reminders
+    appear on the calendar. Flyer campaigns, thank you letters, and contact-log
+    entries are intentionally excluded.
+    """
     events = {}
     month_start = f"{year}-{month:02d}-01"
     month_end = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]}"
@@ -480,14 +547,7 @@ def _gather_events(year: int, month: int) -> dict:
             events.setdefault(day, []).append(entry)
 
     try:
-        from database import get_contact_log, get_lunches, get_cookie_visits, get_flyer_campaigns
-        from database import get_all_practices, get_thank_yous, list_events
-
-        # Contacts (calls, emails, etc.)
-        contacts = get_contact_log(limit=500)
-        for c in contacts:
-            add_event(c.get("contact_date"), "Call",
-                      f"{c.get('contact_type', 'Contact')}: {c.get('practice_name', '')}")
+        from database import get_lunches, get_cookie_visits, list_events, get_recurring_reminders
 
         # Lunches
         lunches = get_lunches()
@@ -502,29 +562,22 @@ def _gather_events(year: int, month: int) -> dict:
             add_event(cv.get("visit_date"), "Cookie Visit",
                       f"Cookies: {cv.get('practice_name', '')}")
 
-        # Flyer campaigns
-        campaigns = get_flyer_campaigns()
-        for fc in campaigns:
-            add_event(fc.get("sent_date"), "Flyer",
-                      f"Flyer: {fc.get('flyer_name', '')}")
-
-        # Thank you letters
-        try:
-            practices = get_all_practices(status_filter="Active")
-            for p in practices:
-                tys = get_thank_yous(practice_id=p["id"], status_filter="Pending")
-                for ty in tys:
-                    add_event(ty.get("created_at"), "Thank You Letter",
-                              f"Thank You: {p['name']}")
-        except Exception:
-            pass
-
-        # Custom events table
+        # Custom events table (manually created via Add Event)
         try:
             evts = list_events(month=month, year=year)
             for e in evts:
                 add_event(e.get("scheduled_date"), e.get("event_type", "Other"),
                           e.get("label", ""), eid=e.get("id"))
+        except Exception:
+            pass
+
+        # Recurring monthly reminders — expand for the current month
+        try:
+            _, last_day = calendar.monthrange(year, month)
+            for r in get_recurring_reminders():
+                day = min(r["day_of_month"], last_day)
+                date_str = f"{year}-{month:02d}-{day:02d}"
+                add_event(date_str, "Reminder", r["name"])
         except Exception:
             pass
 
