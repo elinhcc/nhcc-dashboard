@@ -757,6 +757,94 @@ def show_settings():
                     pass
 
         st.markdown("---")
+        st.markdown("#### Clean Up Calendar Events")
+        st.caption(
+            "Removes old Fax Sent, Flyer, and Thank You Letter events from the calendar. "
+            "Also backfills any Lunch and Cookie Visit records so they appear on the calendar. "
+            "Run this once after deploying the calendar update to fix the cloud database."
+        )
+        if db_exists():
+            if st.button("Run Calendar Cleanup", type="primary", key="run_cal_cleanup"):
+                with st.spinner("Cleaning up calendar events..."):
+                    try:
+                        from database import get_connection, migrate_lunches_cookies_to_events
+                        conn = get_connection()
+
+                        bad_types = (
+                            "Flyer", "Fax Sent", "Fax", "fax", "fax sent",
+                            "Thank You Letter", "Thank You", "thank_you", "flyer",
+                        )
+                        placeholders = ",".join("?" * len(bad_types))
+
+                        evt_count = conn.execute(
+                            f"SELECT COUNT(*) FROM events WHERE event_type IN ({placeholders})"
+                            " OR lower(label) LIKE '%fax%'"
+                            " OR lower(label) LIKE '%flyer%'"
+                            " OR lower(label) LIKE '%thank you%'"
+                            " OR lower(label) LIKE '%letter%'",
+                            bad_types,
+                        ).fetchone()[0]
+
+                        log_count = conn.execute(
+                            f"SELECT COUNT(*) FROM contact_log WHERE contact_type IN ({placeholders})",
+                            bad_types,
+                        ).fetchone()[0]
+
+                        # Delete bad events
+                        conn.execute(
+                            f"DELETE FROM events WHERE event_type IN ({placeholders})"
+                            " OR lower(label) LIKE '%fax%'"
+                            " OR lower(label) LIKE '%flyer%'"
+                            " OR lower(label) LIKE '%thank you%'"
+                            " OR lower(label) LIKE '%letter%'",
+                            bad_types,
+                        )
+
+                        # Delete bad contact_log entries
+                        conn.execute(
+                            f"DELETE FROM contact_log WHERE contact_type IN ({placeholders})",
+                            bad_types,
+                        )
+
+                        conn.commit()
+                        conn.close()
+
+                        st.success(
+                            f"Deleted {evt_count} calendar event(s) and "
+                            f"{log_count} contact log entry(ies)."
+                        )
+
+                        # Backfill lunches and cookie visits
+                        try:
+                            backfill = migrate_lunches_cookies_to_events()
+                            added = backfill.get("lunches", 0) + backfill.get("cookies", 0)
+                            if added:
+                                st.success(
+                                    f"Backfilled {backfill['lunches']} lunch(es) and "
+                                    f"{backfill['cookies']} cookie visit(s) to calendar."
+                                )
+                            else:
+                                st.info("No lunch/cookie visits needed backfilling.")
+                        except Exception as be:
+                            st.warning(f"Backfill skipped: {be}")
+
+                        # Save to GitHub
+                        try:
+                            from database_persistence import save_database_to_github
+                            gh_result = save_database_to_github()
+                            if gh_result.get("success"):
+                                st.success("Database saved to GitHub!")
+                            else:
+                                st.warning(f"GitHub save issue: {gh_result.get('error', 'unknown')}")
+                        except Exception as ge:
+                            st.warning(f"Could not save to GitHub: {ge}")
+
+                    except Exception as e:
+                        st.error(f"Cleanup error: {e}")
+        else:
+            st.caption("Import data first.")
+
+        st.markdown("---")
         st.markdown("#### Location Zip Codes")
         st.markdown("**Huntsville Zips:**")
         st.text(", ".join(config.get("huntsville_zips", [])))
