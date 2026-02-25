@@ -16,14 +16,8 @@ def _safe_metric(label, value, delta=None, delta_color="normal"):
 
 def _get_month_count(table, date_col, ym, extra_where=""):
     """Count rows matching a year-month in a given table."""
-    from database import get_connection
-    conn = get_connection()
-    q = f"SELECT COUNT(*) FROM {table} WHERE strftime('%Y-%m', {date_col})=?"
-    if extra_where:
-        q += f" AND {extra_where}"
-    count = conn.execute(q, (ym,)).fetchone()[0]
-    conn.close()
-    return count
+    from database import get_month_count
+    return get_month_count(table, date_col, ym, extra_where)
 
 
 def show_analytics():
@@ -59,8 +53,7 @@ def show_analytics():
     from database import (
         get_all_practices, get_all_providers, get_contact_log,
         get_lunches, get_cookie_visits, get_flyer_campaigns,
-        get_thank_yous, get_dashboard_stats, get_connection,
-        get_follow_ups,
+        get_thank_yous, get_dashboard_stats, get_follow_ups,
     )
     from utils import relationship_score, score_label
 

@@ -31,16 +31,10 @@ def is_cloud():
 
 
 def db_exists():
-    """Return True if the SQLite database file exists and has at least one practice."""
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.db")
-    if not os.path.exists(db_path):
-        return False
+    """Return True if the database has at least one practice (Supabase or SQLite)."""
     try:
-        import sqlite3
-        conn = sqlite3.connect(db_path)
-        count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
-        conn.close()
-        return count > 0
+        from database import db_exists as _db_exists
+        return _db_exists()
     except Exception:
         return False
 

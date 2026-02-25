@@ -47,12 +47,9 @@ def show_settings():
         st.markdown("#### Database Status")
         try:
             if db_exists():
-                from database import get_connection
-                conn = get_connection()
-                practice_count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
-                provider_count = conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0]
-                conn.close()
-                st.success(f"Database loaded: **{practice_count}** practices, **{provider_count}** providers")
+                from database import get_table_counts
+                counts = get_table_counts()
+                st.success(f"Database loaded: **{counts['practice_count']}** practices, **{counts['provider_count']}** providers")
             else:
                 st.warning("No data loaded yet. Upload an Excel file below to get started.")
         except Exception:
@@ -128,23 +125,8 @@ def show_settings():
             if st.button("Delete All Data", type="secondary"):
                 if confirm_text == "DELETE":
                     try:
-                        from database import get_connection
-                        conn = get_connection()
-                        # Delete in order respecting foreign keys
-                        for table in [
-                            "flyer_recipients", "flyer_campaigns",
-                            "cookie_visits", "thank_you_letters",
-                            "call_attempts", "lunch_tracking",
-                            "contact_log", "provider_history",
-                            "events", "follow_ups",
-                            "providers", "practices",
-                        ]:
-                            try:
-                                conn.execute(f"DELETE FROM {table}")
-                            except Exception:
-                                pass
-                        conn.commit()
-                        conn.close()
+                        from database import delete_all_data
+                        delete_all_data()
                         st.success("All data deleted successfully")
                         # Save empty DB to GitHub
                         try:
@@ -555,20 +537,9 @@ def show_settings():
                                 tmp.write(reimport_file.getvalue())
                                 tmp_path = tmp.name
                             try:
-                                from database import get_connection, init_db
+                                from database import init_db, delete_all_data
                                 init_db()
-                                conn = get_connection()
-                                tables = ["flyer_recipients", "flyer_campaigns", "cookie_visits",
-                                          "thank_you_letters", "call_attempts", "lunch_tracking",
-                                          "contact_log", "provider_history", "providers", "practices",
-                                          "events", "follow_ups"]
-                                for t in tables:
-                                    try:
-                                        conn.execute(f"DELETE FROM {t}")
-                                    except Exception:
-                                        pass
-                                conn.commit()
-                                conn.close()
+                                delete_all_data()
 
                                 from data_import import import_excel
                                 stats = import_excel(tmp_path)
@@ -595,15 +566,8 @@ def show_settings():
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Yes, Re-import", type="primary", key="local_reimport_yes"):
-                        from database import get_connection
-                        conn = get_connection()
-                        tables = ["flyer_recipients", "flyer_campaigns", "cookie_visits",
-                                  "thank_you_letters", "call_attempts", "lunch_tracking",
-                                  "contact_log", "provider_history", "providers", "practices"]
-                        for t in tables:
-                            conn.execute(f"DELETE FROM {t}")
-                        conn.commit()
-                        conn.close()
+                        from database import delete_all_data
+                        delete_all_data()
 
                         from data_import import import_excel
                         stats = import_excel()
@@ -647,40 +611,19 @@ def show_settings():
         if db_exists():
             if st.button("Show Database Diagnostic"):
                 try:
-                    from database import get_connection
-                    conn = get_connection()
-                    total = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
-                    with_fax = conn.execute(
-                        "SELECT COUNT(*) FROM practices WHERE fax IS NOT NULL AND fax != ''"
-                    ).fetchone()[0]
-                    with_vonage = conn.execute(
-                        "SELECT COUNT(*) FROM practices WHERE fax_vonage_email IS NOT NULL AND fax_vonage_email != ''"
-                    ).fetchone()[0]
-
-                    st.write(f"**Total practices:** {total}")
-                    st.write(f"**With fax number:** {with_fax}")
-                    st.write(f"**With Vonage email:** {with_vonage}")
-
-                    if total > 0:
+                    from database import get_fax_diagnostic
+                    diag = get_fax_diagnostic()
+                    st.write(f"**Total practices:** {diag['total']}")
+                    st.write(f"**With fax number:** {diag['with_fax']}")
+                    st.write(f"**With Vonage email:** {diag['with_vonage']}")
+                    if diag["total"] > 0:
                         st.markdown("**Sample records:**")
-                        samples = conn.execute(
-                            "SELECT name, fax, fax_vonage_email FROM practices LIMIT 10"
-                        ).fetchall()
-                        for r in samples:
-                            fax_val = r["fax"] or "(empty)"
-                            vonage_val = r["fax_vonage_email"] or "(empty)"
+                        for r in diag["samples"]:
+                            fax_val = r.get("fax") or "(empty)"
+                            vonage_val = r.get("fax_vonage_email") or "(empty)"
                             st.caption(f"- {r['name']}: fax={fax_val}, vonage={vonage_val}")
-
-                    # Show practices with fax but no vonage
-                    missing = conn.execute(
-                        "SELECT COUNT(*) FROM practices "
-                        "WHERE fax IS NOT NULL AND fax != '' "
-                        "AND (fax_vonage_email IS NULL OR fax_vonage_email = '')"
-                    ).fetchone()[0]
-                    if missing > 0:
-                        st.warning(f"{missing} practices have fax but no Vonage email. Click **Fix All Vonage Fax Emails** above.")
-
-                    conn.close()
+                    if diag["missing_vonage"] > 0:
+                        st.warning(f"{diag['missing_vonage']} practices have fax but no Vonage email. Click **Fix All Vonage Fax Emails** above.")
                 except Exception as e:
                     st.error(f"Diagnostic error: {e}")
         else:
@@ -706,14 +649,13 @@ def show_settings():
                             parse_fax_number, parse_phone_number,
                             convert_fax_to_vonage_email, _detect_columns,
                         )
-                        from database import get_connection
+                        from database import get_all_practices, update_practice
 
                         wb2 = openpyxl.load_workbook(tmp_path)
                         ws2 = wb2["Full List"]
                         col_map = _detect_columns(ws2)
 
-                        conn = get_connection()
-                        practices = conn.execute("SELECT id, name FROM practices").fetchall()
+                        practices = get_all_practices()
                         name_to_id = {r["name"].strip().lower(): r["id"] for r in practices}
 
                         updated = 0
@@ -734,14 +676,8 @@ def show_settings():
                                 updates = {"fax": fax, "fax_vonage_email": vonage}
                                 if phone:
                                     updates["phone"] = phone
-                                sets = ", ".join(f"{k}=?" for k in updates)
-                                conn.execute(
-                                    f"UPDATE practices SET {sets} WHERE id=?",
-                                    list(updates.values()) + [pid],
-                                )
+                                update_practice(pid, updates)
                                 updated += 1
-                        conn.commit()
-                        conn.close()
                         wb2.close()
                     finally:
                         os.unlink(tmp_path)
@@ -767,47 +703,15 @@ def show_settings():
             if st.button("Run Calendar Cleanup", type="primary", key="run_cal_cleanup"):
                 with st.spinner("Cleaning up calendar events..."):
                     try:
-                        from database import get_connection, migrate_lunches_cookies_to_events
-                        conn = get_connection()
+                        from database import cleanup_calendar_events, migrate_lunches_cookies_to_events
 
                         bad_types = (
                             "Flyer", "Fax Sent", "Fax", "fax", "fax sent",
                             "Thank You Letter", "Thank You", "thank_you", "flyer",
                         )
-                        placeholders = ",".join("?" * len(bad_types))
-
-                        evt_count = conn.execute(
-                            f"SELECT COUNT(*) FROM events WHERE event_type IN ({placeholders})"
-                            " OR lower(label) LIKE '%fax%'"
-                            " OR lower(label) LIKE '%flyer%'"
-                            " OR lower(label) LIKE '%thank you%'"
-                            " OR lower(label) LIKE '%letter%'",
-                            bad_types,
-                        ).fetchone()[0]
-
-                        log_count = conn.execute(
-                            f"SELECT COUNT(*) FROM contact_log WHERE contact_type IN ({placeholders})",
-                            bad_types,
-                        ).fetchone()[0]
-
-                        # Delete bad events
-                        conn.execute(
-                            f"DELETE FROM events WHERE event_type IN ({placeholders})"
-                            " OR lower(label) LIKE '%fax%'"
-                            " OR lower(label) LIKE '%flyer%'"
-                            " OR lower(label) LIKE '%thank you%'"
-                            " OR lower(label) LIKE '%letter%'",
-                            bad_types,
-                        )
-
-                        # Delete bad contact_log entries
-                        conn.execute(
-                            f"DELETE FROM contact_log WHERE contact_type IN ({placeholders})",
-                            bad_types,
-                        )
-
-                        conn.commit()
-                        conn.close()
+                        result = cleanup_calendar_events(bad_types)
+                        evt_count = result["evt_count"]
+                        log_count = result["log_count"]
 
                         st.success(
                             f"Deleted {evt_count} calendar event(s) and "

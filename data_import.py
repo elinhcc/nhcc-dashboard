@@ -2,7 +2,7 @@
 import re
 import openpyxl
 from datetime import datetime
-from database import get_connection, init_db, add_practice, add_provider
+from database import init_db, add_practice, add_provider, fix_all_vonage_emails, db_exists
 from utils import backup_excel, load_config, categorize_location
 
 
@@ -274,25 +274,9 @@ def import_excel(excel_path: str = None) -> dict:
 
     # Post-import fixup: ensure every practice with a fax number has a vonage email
     try:
-        conn = get_connection()
-        rows = conn.execute(
-            "SELECT id, fax FROM practices "
-            "WHERE fax IS NOT NULL AND fax != '' "
-            "AND (fax_vonage_email IS NULL OR fax_vonage_email = '')"
-        ).fetchall()
-        fixed = 0
-        for r in rows:
-            vonage = convert_fax_to_vonage_email(r["fax"])
-            if vonage:
-                conn.execute(
-                    "UPDATE practices SET fax_vonage_email=? WHERE id=?",
-                    (vonage, r["id"]),
-                )
-                fixed += 1
-        conn.commit()
-        conn.close()
-        if fixed:
-            stats["vonage_emails_fixed"] = fixed
+        result = fix_all_vonage_emails()
+        if result.get("fixed"):
+            stats["vonage_emails_fixed"] = result["fixed"]
     except Exception:
         pass
 
@@ -308,14 +292,4 @@ def import_excel(excel_path: str = None) -> dict:
 
 def get_import_status():
     """Check if data has been imported."""
-    import os
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.db")
-    if not os.path.exists(db_path):
-        return False
-    try:
-        conn = get_connection()
-        count = conn.execute("SELECT COUNT(*) FROM practices").fetchone()[0]
-        conn.close()
-        return count > 0
-    except Exception:
-        return False
+    return db_exists()
