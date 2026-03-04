@@ -3,19 +3,28 @@ import streamlit as st
 import os
 import sys
 
-# Ensure app directory is on path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from database import init_db, db_exists
-from data_import import get_import_status
-from utils import load_config, is_cloud
-
+# set_page_config MUST be the first Streamlit call — keep it before other imports
+# so that if any import below fails, Streamlit can still render an error page
+# instead of showing the blank "Oh no. Error running app." screen.
 st.set_page_config(
     page_title="NHCC Provider Outreach",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Ensure app directory is on path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Wrap non-stdlib imports so any failure is shown in the browser, not "Oh no"
+_startup_error = None
+try:
+    from database import init_db, db_exists
+    from data_import import get_import_status
+    from utils import load_config, is_cloud
+except Exception:
+    import traceback as _tb
+    _startup_error = _tb.format_exc()
 
 # ── Session state initialization (MUST be before any widgets) ─────────
 st.session_state.setdefault("authenticated", False)
@@ -236,6 +245,12 @@ def check_login():
 
 
 def main():
+    # Show import errors in the browser instead of crashing silently
+    if _startup_error:
+        st.error("Startup error — please report this to support:")
+        st.code(_startup_error)
+        return
+
     # Restore database from GitHub if running on cloud and no local DB exists
     try:
         from database_persistence import auto_restore_database

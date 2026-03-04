@@ -4,8 +4,3 @@ primaryColor = "#4CAF50"
 backgroundColor = "#0E1117"
 secondaryBackgroundColor = "#262730"
 textColor = "#FFFFFF"
-
-[server]
-headless = true
-port = 8501
-enableCORS = false
