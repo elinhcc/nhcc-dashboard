@@ -261,6 +261,16 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (practice_id) REFERENCES practices(id)
     );
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        full_name TEXT,
+        role TEXT DEFAULT 'staff',
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_login DATETIME
+    );
     """)
     _migrate_column(c, "contact_log", "purpose", "TEXT")
     _migrate_column(c, "contact_log", "call_attempt_number", "INTEGER")
@@ -1493,3 +1503,108 @@ def cleanup_providers_date_like(delete=False):
         conn.commit()
     conn.close()
     return candidates
+
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+def get_user_by_username(username: str):
+    """Return active user dict by username, or None."""
+    supa = _supa()
+    if supa:
+        try:
+            result = (
+                supa.table("users")
+                .select("*")
+                .eq("username", username)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception:
+            return None
+    conn = _sqlite()
+    row = conn.execute(
+        "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_users():
+    """Return all users (all roles, active and inactive)."""
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("users").select("*").order("username").execute()
+            return result.data or []
+        except Exception:
+            return []
+    conn = _sqlite()
+    rows = conn.execute("SELECT * FROM users ORDER BY username").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_user(data: dict):
+    """Insert a new user row. Returns the new user id."""
+    supa = _supa()
+    if supa:
+        result = supa.table("users").insert(data).execute()
+        return result.data[0]["id"] if result.data else None
+    conn = _sqlite()
+    # Convert Python bools to int for SQLite
+    row = {k: (1 if v is True else 0 if v is False else v) for k, v in data.items()}
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join(["?"] * len(row))
+    cur = conn.execute(
+        f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(row.values())
+    )
+    conn.commit()
+    uid = cur.lastrowid
+    conn.close()
+    return uid
+
+
+def update_user(user_id: int, data: dict):
+    """Update arbitrary fields on a user row."""
+    supa = _supa()
+    if supa:
+        supa.table("users").update(data).eq("id", user_id).execute()
+        return
+    conn = _sqlite()
+    row = {k: (1 if v is True else 0 if v is False else v) for k, v in data.items()}
+    sets = ", ".join(f"{k}=?" for k in row)
+    conn.execute(
+        f"UPDATE users SET {sets} WHERE id=?", list(row.values()) + [user_id]
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_last_login(user_id: int):
+    """Stamp last_login to now (UTC)."""
+    update_user(user_id, {"last_login": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")})
+
+
+def ensure_default_admin():
+    """Create the default admin user in SQLite if no admin exists.
+    For Supabase, run setup_users.py once instead.
+    """
+    if _supa():
+        return
+    import bcrypt
+    conn = _sqlite()
+    existing = conn.execute(
+        "SELECT id FROM users WHERE role='admin' LIMIT 1"
+    ).fetchone()
+    if not existing:
+        pw_hash = bcrypt.hashpw(b"Admin1234!", bcrypt.gensalt()).decode()
+        conn.execute(
+            "INSERT OR IGNORE INTO users "
+            "(username, password_hash, full_name, role, is_active) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("admin", pw_hash, "Administrator", "admin", 1),
+        )
+        conn.commit()
+    conn.close()

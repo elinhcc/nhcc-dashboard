@@ -27,7 +27,7 @@ except Exception:
     _startup_error = _tb.format_exc()
 
 # ── Session state initialization (MUST be before any widgets) ─────────
-st.session_state.setdefault("authenticated", False)
+st.session_state.setdefault("user", None)                   # logged-in user dict or None
 st.session_state.setdefault("active_contact_form", None)   # practice_id or None
 st.session_state.setdefault("active_lunch_form", None)      # practice_id or None
 st.session_state.setdefault("show_contact_success", None)   # message or None
@@ -213,13 +213,22 @@ st.markdown("""
     }
     .provider-card strong { color: #1E293B; }
     .provider-card small { color: #64748b; }
+
+    /* ── Hide Streamlit branding, GitHub icon, deploy button ───── */
+    #MainMenu                         { display: none !important; }
+    footer                            { display: none !important; }
+    .stAppDeployButton                { display: none !important; }
+    [data-testid="stToolbar"]         { display: none !important; }
+    [data-testid="stHeader"]          { visibility: hidden !important; }
+    .viewerBadge_container__1QSob     { display: none !important; }
+    ._profileContainer_1yi6l_53       { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
 def check_login():
-    """Simple password login."""
-    if st.session_state.authenticated:
+    """Multi-user username + password login."""
+    if st.session_state.get("user"):
         return True
 
     st.markdown("## 🏥 NHCC Provider Outreach Dashboard")
@@ -228,24 +237,36 @@ def check_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("### Login")
+        username = st.text_input("Username", key="login_user")
         password = st.text_input("Password", type="password", key="login_pw")
-        if st.button("Login", use_container_width=True):
-            config = load_config()
-            stored_hash = config.get("app_password_hash", "")
-            if not stored_hash:
-                # No password set yet - first run, accept anything or set default
-                st.session_state.authenticated = True
-                st.rerun()
+        if st.button("Login", use_container_width=True, type="primary"):
+            if not username.strip():
+                st.error("Please enter your username")
             else:
-                import bcrypt
-                if bcrypt.checkpw(password.encode(), stored_hash.encode()):
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect password")
-        if not load_config().get("app_password_hash"):
-            st.info("No password set. Click Login to enter. Set a password in Settings.")
-    return st.session_state.authenticated
+                try:
+                    import bcrypt
+                    from database import get_user_by_username, update_last_login
+                    user = get_user_by_username(username.strip().lower())
+                    if user and bcrypt.checkpw(
+                        password.encode(), user["password_hash"].encode()
+                    ):
+                        update_last_login(user["id"])
+                        st.session_state.user = {
+                            "id":        user["id"],
+                            "username":  user["username"],
+                            "full_name": user.get("full_name") or user["username"],
+                            "role":      user.get("role", "staff"),
+                        }
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+                except Exception as e:
+                    st.error(f"Login error: {e}")
+                    st.info(
+                        "If this is the first setup, run `python setup_users.py` "
+                        "locally to create the users table and default admin account."
+                    )
+    return bool(st.session_state.get("user"))
 
 
 def main():
@@ -272,28 +293,37 @@ def main():
     # Initialize database (safe — creates schema if DB doesn't exist yet)
     try:
         init_db()
+        from database import ensure_default_admin
+        ensure_default_admin()
     except Exception:
         pass  # DB will be created when user uploads data
 
     if not check_login():
         return
 
+    current_user = st.session_state.get("user", {})
+    is_admin = current_user.get("role") == "admin"
+
     # Sidebar navigation
     with st.sidebar:
         st.markdown("## 🏥 NHCC Outreach")
+        st.caption(f"👤 {current_user.get('full_name', 'User')} ({current_user.get('role', '').capitalize()})")
         st.markdown("---")
+
+        nav_options = [
+            "📊 Dashboard",
+            "🏢 Providers",
+            "📋 Action Items",
+            "📅 Calendar",
+            "📨 Flyer Campaigns",
+            "📈 Analytics",
+        ]
+        if is_admin:
+            nav_options += ["⚙️ Settings", "👥 User Management"]
 
         page = st.radio(
             "Navigation",
-            [
-                "📊 Dashboard",
-                "🏢 Providers",
-                "📋 Action Items",
-                "📅 Calendar",
-                "📨 Flyer Campaigns",
-                "📈 Analytics",
-                "⚙️ Settings",
-            ],
+            nav_options,
             label_visibility="collapsed",
         )
 
@@ -313,7 +343,7 @@ def main():
 
         st.markdown("---")
         if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.authenticated = False
+            st.session_state.user = None
             st.rerun()
 
     # Route to page — always allow navigation, pages handle empty state
@@ -335,9 +365,12 @@ def main():
     elif page == "📈 Analytics":
         from pages.analytics import show_analytics
         show_analytics()
-    elif page == "⚙️ Settings":
+    elif page == "⚙️ Settings" and is_admin:
         from pages.settings import show_settings
         show_settings()
+    elif page == "👥 User Management" and is_admin:
+        from pages.user_management import show_user_management
+        show_user_management()
 
     # Render modal dialogs for contact/lunch/fax forms if active
     try:
