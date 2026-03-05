@@ -106,6 +106,7 @@ def init_db():
         zip_code TEXT,
         location_category TEXT DEFAULT 'Other',
         website TEXT,
+        specialty TEXT,
         contact_person TEXT,
         phone TEXT,
         fax TEXT,
@@ -268,6 +269,7 @@ def init_db():
     _migrate_column(c, "contact_log", "fax_document", "TEXT")
     _migrate_column(c, "cookie_visits", "status", "TEXT DEFAULT 'Logged'")
     _migrate_column(c, "cookie_visits", "next_visit_date", "DATETIME")
+    _migrate_column(c, "practices", "specialty", "TEXT")
     conn.commit()
     conn.close()
 

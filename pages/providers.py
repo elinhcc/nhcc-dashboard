@@ -4,6 +4,15 @@ import pandas as pd
 from datetime import datetime, timedelta
 from utils import db_exists
 
+_SPECIALTIES = [
+    "", "Cardiology", "Dermatology", "Endocrinology", "Gastroenterology",
+    "Hematology/Oncology", "Infectious Disease", "Internal Medicine",
+    "Nephrology", "Neurology", "Obstetrics & Gynecology", "Oncology",
+    "Ophthalmology", "Orthopedics", "Otolaryngology (ENT)", "Palliative Care",
+    "Primary Care", "Psychiatry", "Pulmonology", "Radiation Oncology",
+    "Radiology", "Rheumatology", "Surgery", "Urology", "Other",
+]
+
 
 # ── Callback helpers (execute BEFORE page re-renders) ─────────────────
 
@@ -652,6 +661,13 @@ def show_providers():
                 with detail_col2:
                     st.markdown(f"**Status:** {practice.get('status', 'Active')}")
                     st.markdown(f"**Contact Person:** {practice.get('contact_person', 'N/A')}")
+                    if practice.get("specialty"):
+                        st.markdown(f"**Specialty:** {practice['specialty']}")
+                    if practice.get("website"):
+                        website_url = practice["website"]
+                        if not website_url.startswith(("http://", "https://")):
+                            website_url = "https://" + website_url
+                        st.markdown(f'**Website:** <a class="contact-website" href="{website_url}" target="_blank">{practice["website"]}</a>', unsafe_allow_html=True)
                     st.markdown(f"**Notes:** {practice.get('notes', '')[:200]}")
 
                 # Last contact summary
@@ -874,6 +890,8 @@ def show_providers():
             contact_person = st.text_input("Contact Person")
             email = st.text_input("Email")
             website = st.text_input("Website")
+            specialty_choice = st.selectbox("Specialty", _SPECIALTIES)
+            specialty_other = st.text_input("Specify Specialty (if Other)")
             notes = st.text_area("Notes")
             new_providers = st.text_area("Providers (one per line)")
 
@@ -889,6 +907,7 @@ def show_providers():
                     if zip_match:
                         zip_code = zip_match.group(1)
 
+                    specialty = specialty_other.strip() if specialty_choice == "Other" else specialty_choice
                     practice_id = add_practice({
                         "name": name,
                         "address": address,
@@ -900,6 +919,7 @@ def show_providers():
                         "contact_person": contact_person,
                         "email": email,
                         "website": website,
+                        "specialty": specialty,
                         "notes": notes,
                     })
 
@@ -927,6 +947,10 @@ def _show_edit_form(practice):
         contact_person = st.text_input("Contact Person", value=practice.get("contact_person", ""))
         email = st.text_input("Email", value=practice.get("email", ""))
         website = st.text_input("Website", value=practice.get("website", ""))
+        current_specialty = practice.get("specialty", "") or ""
+        spec_index = _SPECIALTIES.index(current_specialty) if current_specialty in _SPECIALTIES else 0
+        specialty_choice = st.selectbox("Specialty", _SPECIALTIES, index=spec_index)
+        specialty_other = st.text_input("Specify Specialty (if Other)", value=current_specialty if current_specialty not in _SPECIALTIES else "")
         notes = st.text_area("Notes", value=practice.get("notes", ""))
 
         col1, col2 = st.columns(2)
@@ -940,10 +964,11 @@ def _show_edit_form(practice):
                 if zip_match:
                     zip_code = zip_match.group(1)
 
+                specialty = specialty_other.strip() if specialty_choice == "Other" else specialty_choice
                 update_practice(practice["id"], {
                     "name": name, "address": address, "phone": phone, "fax": fax,
                     "fax_vonage_email": vonage_email, "contact_person": contact_person,
-                    "email": email, "website": website, "notes": notes,
+                    "email": email, "website": website, "specialty": specialty, "notes": notes,
                     "zip_code": zip_code, "location_category": categorize_location(address),
                 })
                 st.session_state[f"editing_{practice['id']}"] = False
