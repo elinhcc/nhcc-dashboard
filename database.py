@@ -1079,7 +1079,7 @@ def delete_event(event_id: int):
 def list_events(practice_id=None, event_type=None, month=None, year=None):
     supa = _supa()
     if supa:
-        q = supa.table("events").select("*, practices(name)").order("scheduled_date", desc=True)
+        q = supa.table("events").select("*").order("scheduled_date", desc=True)
         if practice_id:
             q = q.eq("practice_id", practice_id)
         if event_type:
@@ -1088,8 +1088,6 @@ def list_events(practice_id=None, event_type=None, month=None, year=None):
             start, end = _ym_to_range(f"{year}-{int(month):02d}")
             q = q.gte("scheduled_date", start).lt("scheduled_date", end)
         rows = q.execute().data or []
-        for row in rows:
-            _pop_embed(row, "practices", "practice_name")
         return rows
     conn = _sqlite()
     query = "SELECT e.*, pr.name as practice_name FROM events e LEFT JOIN practices pr ON e.practice_id=pr.id"
