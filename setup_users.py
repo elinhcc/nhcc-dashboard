@@ -84,6 +84,23 @@ def main():
     """)
     print("  ✓ users table ready")
 
+    # ── Create tasks table ────────────────────────────────────────────
+    print("Creating tasks table (if not exists)...")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id          BIGSERIAL PRIMARY KEY,
+            practice_id BIGINT    NOT NULL REFERENCES practices(id),
+            task_type   TEXT      NOT NULL,
+            description TEXT,
+            due_date    DATE,
+            assigned_to TEXT,
+            is_complete BOOLEAN   NOT NULL DEFAULT FALSE,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMPTZ
+        )
+    """)
+    print("  ✓ tasks table ready")
+
     # ── Upsert default admin ──────────────────────────────────────────
     default_password = "Admin1234!"
     pw_hash = bcrypt.hashpw(default_password.encode(), bcrypt.gensalt()).decode()

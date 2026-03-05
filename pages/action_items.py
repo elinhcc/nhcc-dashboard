@@ -1,7 +1,7 @@
 """Action items page: overdue items, contact queue, thank you checklist, upcoming tasks."""
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from utils import db_exists
 
 
@@ -12,11 +12,11 @@ def show_action_items():
         st.warning("No data loaded yet.")
         st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
         # Show empty tab structure
-        tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts = st.tabs([
+        tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts, tab_tasks = st.tabs([
             "Overdue / Upcoming", "Lunch Tracking", "Thank You Letters",
-            "Cookie Visits", "Contact Queue",
+            "Cookie Visits", "Contact Queue", "Tasks",
         ])
-        for tab in [tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts]:
+        for tab in [tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts, tab_tasks]:
             with tab:
                 st.info("Import data to see action items.")
         return
@@ -28,16 +28,17 @@ def show_action_items():
         get_providers_for_practice, add_contact_log,
         add_call_attempt, get_call_attempts, add_cookie_visit,
         get_contact_log, create_event, get_call_attempt_count,
-        add_follow_up,
+        add_follow_up, get_tasks, update_task, add_task,
     )
     from utils import get_overdue_items, days_since, format_phone_link, format_email_link
 
-    tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts = st.tabs([
+    tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts, tab_tasks = st.tabs([
         "Overdue / Upcoming",
         "Lunch Tracking",
         "Thank You Letters",
         "Cookie Visits",
         "Contact Queue",
+        "Tasks",
     ])
 
     # ── Overdue / Upcoming ─────────────────────────────────────────────
@@ -424,6 +425,99 @@ def show_action_items():
                     if st.button("Schedule", key=f"cq_sched_{item['practice_id']}"):
                         st.session_state.active_lunch_form = item['practice_id']
                         st.rerun()
+
+    # ── Tasks ───────────────────────────────────────────────────────────
+    with tab_tasks:
+        st.markdown("### Tasks")
+
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            task_status_filter = st.selectbox("Status", ["Pending", "Completed", "All"], key="task_status_f")
+        with col_f2:
+            task_type_filter = st.selectbox(
+                "Type", ["All", "Follow-up Call", "Catering", "Confirmation Email", "Follow-up", "General"],
+                key="task_type_f",
+            )
+        with col_f3:
+            task_sort = st.selectbox("Sort by", ["Due Date", "Practice", "Type"], key="task_sort_f")
+
+        is_complete_filter = None
+        if task_status_filter == "Pending":
+            is_complete_filter = False
+        elif task_status_filter == "Completed":
+            is_complete_filter = True
+
+        tasks = get_tasks(is_complete=is_complete_filter)
+
+        if task_type_filter != "All":
+            tasks = [t for t in tasks if t.get("task_type") == task_type_filter]
+        if task_sort == "Practice":
+            tasks.sort(key=lambda x: x.get("practice_name", ""))
+        elif task_sort == "Type":
+            tasks.sort(key=lambda x: x.get("task_type", ""))
+
+        if not tasks:
+            st.info(f"No {task_status_filter.lower()} tasks.")
+        else:
+            today_iso = date.today().isoformat()
+            st.caption(f"{len(tasks)} task(s)")
+            for task in tasks:
+                tid = task["id"]
+                t_type = task.get("task_type", "")
+                t_desc = task.get("description", "")
+                t_due = (task.get("due_date") or "")[:10]
+                t_practice = task.get("practice_name", "")
+                t_complete = bool(task.get("is_complete", False))
+                t_assigned = task.get("assigned_to", "")
+                is_overdue = t_due and t_due < today_iso and not t_complete
+
+                col1, col2, col3 = st.columns([4, 2, 1])
+                with col1:
+                    prefix = "🔴 " if is_overdue else ("✅ " if t_complete else "⬜ ")
+                    st.markdown(f"{prefix}**{t_type}** — {t_practice}")
+                    st.caption(t_desc)
+                with col2:
+                    st.caption(f"Due: {t_due or 'TBD'}")
+                    if t_assigned:
+                        st.caption(f"Assigned: {t_assigned}")
+                with col3:
+                    if not t_complete:
+                        if st.button("Done", key=f"task_done_{tid}"):
+                            update_task(tid, {
+                                "is_complete": 1,
+                                "completed_at": datetime.now().isoformat(),
+                            })
+                            st.rerun()
+                    else:
+                        if st.button("Reopen", key=f"task_reopen_{tid}"):
+                            update_task(tid, {"is_complete": 0, "completed_at": None})
+                            st.rerun()
+
+        # Add manual task
+        st.markdown("---")
+        st.markdown("### Add Task")
+        with st.form("add_task_form"):
+            all_practices = get_all_practices(status_filter="Active")
+            practice_map = {p["name"]: p["id"] for p in all_practices}
+            task_practice = st.selectbox("Practice", list(practice_map.keys()), key="new_task_practice")
+            new_task_type = st.selectbox(
+                "Task Type",
+                ["Follow-up Call", "Catering", "Confirmation Email", "Follow-up", "General"],
+            )
+            new_task_desc = st.text_input("Description")
+            new_task_due = st.date_input("Due Date", value=datetime.now() + timedelta(days=3))
+            new_task_assigned = st.selectbox("Assigned To", ["Robbie", "Kianah", "Darvin", "Other"])
+
+            if st.form_submit_button("Add Task", type="primary"):
+                add_task({
+                    "practice_id": practice_map[task_practice],
+                    "task_type": new_task_type,
+                    "description": new_task_desc,
+                    "due_date": new_task_due.isoformat(),
+                    "assigned_to": new_task_assigned,
+                })
+                st.success("Task added!")
+                st.rerun()
 
 
 # ── Helper forms ──────────────────────────────────────────────────────

@@ -36,11 +36,20 @@ def show_dashboard():
         c6.metric("Flyers Sent (Month)", stats["flyers_sent_this_month"])
 
         # Cookie visit metrics
-        c7, c8 = st.columns([1, 5])
+        c7, c8, c9, c10, c11 = st.columns([1, 1, 1, 1, 1])
         with c7:
             st.metric("Cookie Visits (Month)", stats.get("cookie_visits_this_month", 0))
         with c8:
             st.metric("Cookie Visits (Total)", stats.get("cookie_visits_total", 0))
+        with c9:
+            tasks_due = stats.get("tasks_due_today", 0)
+            st.metric("Tasks Due Today", tasks_due)
+        with c10:
+            tasks_ovr = stats.get("tasks_overdue", 0)
+            st.metric("Overdue Tasks", tasks_ovr)
+        with c11:
+            needs_attn = stats.get("needs_attention", 0)
+            st.metric("Needs Attention", needs_attn)
 
         st.markdown("---")
 

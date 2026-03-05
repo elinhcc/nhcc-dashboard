@@ -261,6 +261,18 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (practice_id) REFERENCES practices(id)
     );
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        practice_id INTEGER NOT NULL,
+        task_type TEXT NOT NULL,
+        description TEXT,
+        due_date DATE,
+        assigned_to TEXT,
+        is_complete INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME,
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL UNIQUE,
@@ -920,6 +932,95 @@ def update_follow_up(follow_up_id: int, data: dict):
     conn.close()
 
 
+# ── Tasks ─────────────────────────────────────────────────────────────────────
+
+def _add_business_days(start_date, days: int):
+    """Return a date N business days after start_date (Mon–Fri)."""
+    from datetime import timedelta
+    current = start_date
+    added = 0
+    while added < days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current
+
+
+def add_task(data: dict) -> int:
+    supa = _supa()
+    if supa:
+        d = dict(data)
+        if "is_complete" in d:
+            d["is_complete"] = bool(d["is_complete"])
+        result = supa.table("tasks").insert(d).execute()
+        return result.data[0]["id"]
+    conn = _sqlite()
+    cols = ", ".join(data.keys())
+    placeholders = ", ".join(["?"] * len(data))
+    cur = conn.execute(f"INSERT INTO tasks ({cols}) VALUES ({placeholders})", list(data.values()))
+    conn.commit()
+    tid = cur.lastrowid
+    conn.close()
+    return tid
+
+
+def get_tasks(practice_id=None, is_complete=None, due_before=None):
+    supa = _supa()
+    if supa:
+        try:
+            q = supa.table("tasks").select("*, practices(name)").order("due_date")
+            if practice_id:
+                q = q.eq("practice_id", practice_id)
+            if is_complete is not None:
+                q = q.eq("is_complete", bool(is_complete))
+            if due_before:
+                q = q.lte("due_date", due_before)
+            rows = q.execute().data or []
+            for row in rows:
+                _pop_embed(row, "practices", "practice_name")
+            return rows
+        except Exception:
+            return []
+    conn = _sqlite()
+    try:
+        query = ("SELECT t.*, pr.name as practice_name FROM tasks t "
+                 "JOIN practices pr ON t.practice_id=pr.id")
+        conditions, params = [], []
+        if practice_id:
+            conditions.append("t.practice_id=?")
+            params.append(practice_id)
+        if is_complete is not None:
+            conditions.append("t.is_complete=?")
+            params.append(1 if is_complete else 0)
+        if due_before:
+            conditions.append("t.due_date<=?")
+            params.append(due_before)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY t.due_date ASC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        conn.close()
+        return []
+
+
+def update_task(task_id: int, data: dict):
+    supa = _supa()
+    if supa:
+        d = dict(data)
+        if "is_complete" in d:
+            d["is_complete"] = bool(d["is_complete"])
+        supa.table("tasks").update(d).eq("id", task_id).execute()
+        return
+    conn = _sqlite()
+    sets = ", ".join(f"{k}=?" for k in data)
+    conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", list(data.values()) + [task_id])
+    conn.commit()
+    conn.close()
+
+
 # ── Dashboard Stats ───────────────────────────────────────────────────────────
 
 def get_dashboard_stats() -> dict:
@@ -970,6 +1071,39 @@ def get_dashboard_stats() -> dict:
         stats["faxes_this_month"] = _count_month("contact_log", "contact_date", contact_type="Fax Sent")
         stats["huntsville_practices"] = _count("practices", location_category="Huntsville", status="Active")
         stats["woodlands_practices"] = _count("practices", location_category="Woodlands", status="Active")
+
+        # Task stats
+        today_str = date.today().isoformat()
+        try:
+            stats["tasks_due_today"] = (
+                supa.table("tasks").select("id", count="exact")
+                .eq("is_complete", False).lte("due_date", today_str).execute().count or 0
+            )
+            stats["tasks_overdue"] = (
+                supa.table("tasks").select("id", count="exact")
+                .eq("is_complete", False).lt("due_date", today_str).execute().count or 0
+            )
+        except Exception:
+            stats["tasks_due_today"] = 0
+            stats["tasks_overdue"] = 0
+
+        # Needs attention: 3+ phone calls, no lunch scheduled
+        try:
+            from collections import Counter as _Counter
+            phone_logs = (supa.table("contact_log").select("practice_id")
+                          .eq("contact_type", "Phone Call").execute().data or [])
+            phone_counts = _Counter(r["practice_id"] for r in phone_logs)
+            high_attn = {pid for pid, cnt in phone_counts.items() if cnt >= 3}
+            if high_attn:
+                scheduled = (supa.table("lunch_tracking").select("practice_id")
+                             .in_("status", ["Scheduled", "Completed"]).execute().data or [])
+                scheduled_pids = {r["practice_id"] for r in scheduled}
+                stats["needs_attention"] = len(high_attn - scheduled_pids)
+            else:
+                stats["needs_attention"] = 0
+        except Exception:
+            stats["needs_attention"] = 0
+
         return stats
 
     conn = _sqlite()
@@ -1007,6 +1141,34 @@ def get_dashboard_stats() -> dict:
     stats["woodlands_practices"] = conn.execute(
         "SELECT COUNT(*) FROM practices WHERE location_category='Woodlands' AND status='Active'"
     ).fetchone()[0]
+
+    today_str = date.today().isoformat()
+    try:
+        stats["tasks_due_today"] = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE is_complete=0 AND due_date<=?", (today_str,)
+        ).fetchone()[0]
+        stats["tasks_overdue"] = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE is_complete=0 AND due_date<?", (today_str,)
+        ).fetchone()[0]
+    except Exception:
+        stats["tasks_due_today"] = 0
+        stats["tasks_overdue"] = 0
+
+    try:
+        stats["needs_attention"] = conn.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT practice_id FROM contact_log
+                WHERE contact_type='Phone Call'
+                GROUP BY practice_id HAVING COUNT(*) >= 3
+            ) subq
+            WHERE subq.practice_id NOT IN (
+                SELECT practice_id FROM lunch_tracking
+                WHERE status IN ('Scheduled', 'Completed')
+            )
+        """).fetchone()[0]
+    except Exception:
+        stats["needs_attention"] = 0
+
     conn.close()
     return stats
 
