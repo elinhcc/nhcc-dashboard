@@ -6,6 +6,53 @@ from utils import db_exists
 def show_dashboard():
     st.markdown("## Provider Outreach Dashboard")
 
+    # ── Morning summary card ───────────────────────────────────────────
+    try:
+        if db_exists():
+            from database import get_tasks, get_all_practices, get_contact_log, get_lunches, get_call_attempt_count
+            from datetime import date, timedelta
+
+            current_user = st.session_state.get("current_user", "") or "Admin"
+            is_admin = current_user == "Admin"
+            hour = __import__("datetime").datetime.now().hour
+            greeting = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
+            name = current_user if not is_admin else "there"
+
+            today_str   = date.today().isoformat()
+            in_3_days   = (date.today() + timedelta(days=3)).isoformat()
+
+            tasks = get_tasks() if is_admin else get_tasks(assigned_to=current_user)
+            open_tasks = [t for t in tasks if t.get("status") != "done"]
+            overdue_count = sum(
+                1 for t in open_tasks
+                if t.get("due_date") and t["due_date"] < today_str
+            )
+            today_count = sum(1 for t in open_tasks if t.get("due_date") == today_str)
+
+            # Count practices in contact queue (attempted but no lunch)
+            practices = get_all_practices(status_filter="Active")
+            queue_count = 0
+            for p in practices:
+                contacts   = get_contact_log(practice_id=p["id"], limit=1)
+                lunches    = get_lunches(practice_id=p["id"])
+                call_count = get_call_attempt_count(p["id"])
+                has_lunch  = any(l.get("status") in ("Scheduled", "Completed") for l in lunches)
+                if contacts and not has_lunch and call_count > 0:
+                    queue_count += 1
+
+            with st.container(border=True):
+                st.markdown(f"**{greeting} {name}! Here's your day:**")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Overdue Tasks",    overdue_count)
+                c2.metric("Due Today",        today_count)
+                c3.metric("Awaiting Contact", queue_count)
+                c4.metric("Open Tasks",       len(open_tasks))
+                if st.button("Go to My Daily Work →", type="primary"):
+                    st.session_state["_nav_override"] = "My Daily Work"
+                    st.rerun()
+    except Exception:
+        pass
+
     # Check if database has data
     if not db_exists():
         st.warning("No data loaded yet.")

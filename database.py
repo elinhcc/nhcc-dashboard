@@ -92,10 +92,30 @@ def get_connection():
     return _sqlite()
 
 
+_TASKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id BIGSERIAL PRIMARY KEY,
+    practice_id BIGINT REFERENCES practices(id),
+    description TEXT NOT NULL,
+    assigned_to TEXT,
+    due_date DATE,
+    status TEXT DEFAULT 'open',
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+"""
+
+
 def init_db():
-    """Create SQLite schema (no-op when using Supabase — tables live in Postgres)."""
+    """Create SQLite schema. For Supabase, attempts to create tasks table via RPC if missing."""
     if _supa():
-        return  # Schema is managed in Supabase SQL editor
+        # Try to ensure tasks table exists in Supabase via rpc exec_sql (if available)
+        try:
+            _supa().rpc("exec_sql", {"sql": _TASKS_TABLE_SQL}).execute()
+        except Exception:
+            pass  # RPC not available — table must be created manually in Supabase SQL editor
+        return
     conn = _sqlite()
     c = conn.cursor()
     c.executescript("""
@@ -260,6 +280,18 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (practice_id) REFERENCES practices(id)
     );
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        practice_id INTEGER,
+        description TEXT NOT NULL,
+        assigned_to TEXT,
+        due_date DATE,
+        status TEXT DEFAULT 'open',
+        notes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME,
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
     """)
     _migrate_column(c, "contact_log", "purpose", "TEXT")
     _migrate_column(c, "contact_log", "call_attempt_number", "INTEGER")
@@ -268,6 +300,9 @@ def init_db():
     _migrate_column(c, "contact_log", "fax_document", "TEXT")
     _migrate_column(c, "cookie_visits", "status", "TEXT DEFAULT 'Logged'")
     _migrate_column(c, "cookie_visits", "next_visit_date", "DATETIME")
+    _migrate_column(c, "tasks", "assigned_to", "TEXT")
+    _migrate_column(c, "tasks", "notes", "TEXT")
+    _migrate_column(c, "tasks", "completed_at", "DATETIME")
     conn.commit()
     conn.close()
 
@@ -1493,3 +1528,76 @@ def cleanup_providers_date_like(delete=False):
         conn.commit()
     conn.close()
     return candidates
+
+
+# ── Tasks CRUD ────────────────────────────────────────────────────────────────
+
+def get_tasks(assigned_to=None, status=None, practice_id=None):
+    supa = _supa()
+    if supa:
+        try:
+            q = supa.table("tasks").select("*, practices(name)").order("due_date")
+            if assigned_to:
+                q = q.eq("assigned_to", assigned_to)
+            if status:
+                q = q.eq("status", status)
+            if practice_id:
+                q = q.eq("practice_id", practice_id)
+            rows = q.execute().data or []
+            for row in rows:
+                _pop_embed(row, "practices", "practice_name")
+            return rows
+        except Exception:
+            return []
+    conn = _sqlite()
+    query = (
+        "SELECT t.*, pr.name as practice_name FROM tasks t "
+        "LEFT JOIN practices pr ON t.practice_id=pr.id WHERE 1=1"
+    )
+    params = []
+    if assigned_to:
+        query += " AND t.assigned_to=?"
+        params.append(assigned_to)
+    if status:
+        query += " AND t.status=?"
+        params.append(status)
+    if practice_id:
+        query += " AND t.practice_id=?"
+        params.append(practice_id)
+    query += " ORDER BY t.due_date ASC NULLS LAST"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_task(data: dict) -> int:
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("tasks").insert(data).execute()
+            return result.data[0]["id"]
+        except Exception:
+            return 0
+    conn = _sqlite()
+    cols = ", ".join(data.keys())
+    placeholders = ", ".join(["?"] * len(data))
+    cur = conn.execute(f"INSERT INTO tasks ({cols}) VALUES ({placeholders})", list(data.values()))
+    conn.commit()
+    tid = cur.lastrowid
+    conn.close()
+    return tid
+
+
+def update_task(task_id: int, data: dict):
+    supa = _supa()
+    if supa:
+        try:
+            supa.table("tasks").update(data).eq("id", task_id).execute()
+        except Exception:
+            pass
+        return
+    conn = _sqlite()
+    sets = ", ".join(f"{k}=?" for k in data)
+    conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", list(data.values()) + [task_id])
+    conn.commit()
+    conn.close()

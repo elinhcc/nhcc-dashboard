@@ -28,6 +28,7 @@ except Exception:
 
 # ── Session state initialization (MUST be before any widgets) ─────────
 st.session_state.setdefault("authenticated", False)
+st.session_state.setdefault("current_user", "")
 st.session_state.setdefault("active_contact_form", None)   # practice_id or None
 st.session_state.setdefault("active_lunch_form", None)      # practice_id or None
 st.session_state.setdefault("show_contact_success", None)   # message or None
@@ -279,19 +280,48 @@ def main():
         st.markdown("## 🏥 NHCC Outreach")
         st.markdown("---")
 
+        _nav_pages = [
+            "📊 Dashboard",
+            "🏢 Providers",
+            "📋 Action Items",
+            "📅 Calendar",
+            "📨 Flyer Campaigns",
+            "📈 Analytics",
+            "⚙️ Settings",
+        ]
+        _nav_override = st.session_state.pop("_nav_override", None)
+        _default_idx  = 0
+        if _nav_override == "My Daily Work":
+            _default_idx = 2  # "📋 Action Items"
         page = st.radio(
             "Navigation",
-            [
-                "📊 Dashboard",
-                "🏢 Providers",
-                "📋 Action Items",
-                "📅 Calendar",
-                "📨 Flyer Campaigns",
-                "📈 Analytics",
-                "⚙️ Settings",
-            ],
+            _nav_pages,
+            index=_default_idx,
             label_visibility="collapsed",
         )
+
+        st.markdown("---")
+
+        # Who are you? (user identity for task filtering)
+        try:
+            _cfg = load_config()
+            _members = _cfg.get("team_members", [])
+            if _members:
+                _user_options = ["Admin"] + _members
+                _cur = st.session_state.get("current_user", "") or "Admin"
+                if _cur not in _user_options:
+                    _cur = "Admin"
+                _selected = st.selectbox(
+                    "You are:",
+                    _user_options,
+                    index=_user_options.index(_cur),
+                    key="sidebar_user_selector",
+                )
+                if _selected != st.session_state.get("current_user"):
+                    st.session_state.current_user = _selected
+                    st.rerun()
+        except Exception:
+            pass
 
         st.markdown("---")
 

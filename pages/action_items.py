@@ -1,645 +1,328 @@
-"""Action items page: overdue items, contact queue, thank you checklist, upcoming tasks."""
+"""My Daily Work — personal task list and contact queue."""
 import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from utils import db_exists
 
 
 def show_action_items():
-    st.markdown("## Action Items & Follow-ups")
+    st.markdown("## My Daily Work")
 
     if not db_exists():
         st.warning("No data loaded yet.")
         st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
-        # Show empty tab structure
-        tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts = st.tabs([
-            "Overdue / Upcoming", "Lunch Tracking", "Thank You Letters",
-            "Cookie Visits", "Contact Queue",
-        ])
-        for tab in [tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts]:
-            with tab:
-                st.info("Import data to see action items.")
         return
 
-    # Lazy imports — only when database exists (avoids crash when DB missing)
     from database import (
-        get_all_practices, get_lunches, update_lunch, add_lunch,
-        get_thank_yous, update_thank_you, add_thank_you,
-        get_providers_for_practice, add_contact_log,
-        add_call_attempt, get_call_attempts, add_cookie_visit,
-        get_contact_log, create_event, get_call_attempt_count,
-        add_follow_up,
+        get_all_practices, get_contact_log, get_lunches,
+        get_call_attempt_count, add_contact_log,
+        get_tasks, add_task, update_task,
     )
-    from utils import get_overdue_items, days_since, format_phone_link, format_email_link
+    from utils import load_config, days_since, format_phone_link
 
-    tab_overdue, tab_lunches, tab_thankyou, tab_cookies, tab_contacts = st.tabs([
-        "Overdue / Upcoming",
-        "Lunch Tracking",
-        "Thank You Letters",
-        "Cookie Visits",
-        "Contact Queue",
-    ])
+    config = load_config()
+    team_members = config.get("team_members", [])
+    current_user = st.session_state.get("current_user", "") or "Admin"
+    is_admin = current_user == "Admin"
 
-    # ── Overdue / Upcoming ─────────────────────────────────────────────
-    with tab_overdue:
-        items = get_overdue_items()
-        if not items:
-            st.success("No overdue items! Everything is on track.")
-        else:
-            high = [i for i in items if i["priority"] == "high"]
-            med = [i for i in items if i["priority"] == "medium"]
+    today = date.today()
+    today_str = today.isoformat()
+    in_3_days = (today + timedelta(days=3)).isoformat()
 
-            if high:
-                st.markdown("### High Priority")
-                for item in high:
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    col1.markdown(f"**{item['practice']}**")
-                    col2.markdown(f"{item['type']}: {item['detail']}")
-                    with col3:
-                        if st.button("Log Contact", key=f"ov_contact_{item['practice_id']}_{item['type']}"):
-                            st.session_state.active_contact_form = item['practice_id']
-                            st.rerun()
+    # ── Load tasks ─────────────────────────────────────────────────────
+    if is_admin:
+        all_tasks = get_tasks()
+    else:
+        all_tasks = get_tasks(assigned_to=current_user)
 
-            if med:
-                st.markdown("### Medium Priority")
-                for item in med:
-                    col1, col2 = st.columns([3, 3])
-                    col1.markdown(f"**{item['practice']}**")
-                    col2.markdown(f"{item['type']}: {item['detail']}")
+    open_tasks = [t for t in all_tasks if t.get("status") != "done"]
+    overdue    = sorted(
+        [t for t in open_tasks if t.get("due_date") and t["due_date"] < today_str],
+        key=lambda x: x.get("due_date", ""),
+    )
+    due_today  = [t for t in open_tasks if t.get("due_date") == today_str]
+    upcoming   = sorted(
+        [t for t in open_tasks if t.get("due_date") and today_str < t["due_date"] <= in_3_days],
+        key=lambda x: x.get("due_date", ""),
+    )
+    no_date    = [t for t in open_tasks if not t.get("due_date")]
+    completed_today = [
+        t for t in all_tasks
+        if t.get("status") == "done" and (t.get("completed_at") or "")[:10] == today_str
+    ]
 
-    # ── Lunch Tracking ─────────────────────────────────────────────────
-    with tab_lunches:
-        st.markdown("### Active Lunch Workflows")
+    # ── Greeting header ────────────────────────────────────────────────
+    hour = datetime.now().hour
+    greeting = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
+    name = current_user if not is_admin else "there"
+    todo_count = len(overdue) + len(due_today)
 
-        status_tabs = st.tabs(["Not Contacted", "Attempting", "Scheduled", "Completed"])
-        status_order = ["Not Contacted", "Attempting", "Scheduled", "Completed"]
+    if todo_count == 0:
+        st.markdown(f"### {greeting} {name}!")
+        st.success(
+            "You're all caught up! Check the Contact Queue below "
+            "for practices that need outreach."
+        )
+    else:
+        plural = "things" if todo_count != 1 else "thing"
+        st.markdown(f"### {greeting} {name}! You have **{todo_count}** {plural} to do today.")
 
-        for stab, status in zip(status_tabs, status_order):
-            with stab:
-                lunches = get_lunches(status_filter=status)
-                if not lunches:
-                    st.info(f"No lunches with status '{status}'")
-                    continue
+    # ── Add task expander ──────────────────────────────────────────────
+    with st.expander("Add New Task"):
+        _show_add_task_form(team_members, current_user, is_admin)
 
-                for lunch in lunches:
-                    date_display = lunch.get('scheduled_date', 'TBD')
-                    if date_display and date_display != 'TBD':
-                        date_display = str(date_display)[:10]
-                    with st.expander(f"{lunch['practice_name']} — {status} | {date_display}"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown(f"**Date:** {lunch.get('scheduled_date', 'TBD')}")
-                            st.markdown(f"**Time:** {lunch.get('scheduled_time', 'TBD')}")
-                            st.markdown(f"**Staff Count:** {lunch.get('staff_count', 'TBD')}")
-                            st.markdown(f"**Restaurant:** {lunch.get('restaurant', 'TBD')}")
-                        with col2:
-                            st.markdown(f"**Dietary Notes:** {lunch.get('dietary_notes', 'None')}")
-                            st.markdown(f"**Confirmed With:** {lunch.get('confirmed_with', 'TBD')}")
+    st.markdown("---")
 
-                        # Call attempts for this lunch
-                        attempts = get_call_attempts(lunch_id=lunch["id"])
-                        if attempts:
-                            st.markdown("**Call Attempts:**")
-                            for att in attempts:
-                                att_date = att.get('call_date', '')[:10] if att.get('call_date') else 'N/A'
-                                st.caption(f"Call {att_date} {att.get('call_time', '')} — {att.get('outcome', '')} — {att.get('notes', '')}")
+    # ── Overdue ────────────────────────────────────────────────────────
+    if overdue:
+        st.markdown("### Overdue")
+        for task in overdue:
+            _task_card(task, is_admin, "overdue")
 
-                        # Smart suggestion for practices with many failed calls
-                        if status in ("Not Contacted", "Attempting"):
-                            call_count = len(attempts)
-                            if call_count >= 3:
-                                st.warning(f"**{call_count} call attempts** with no lunch scheduled. Consider trying email or in-person visit instead.")
+    # ── Due today ──────────────────────────────────────────────────────
+    if due_today:
+        st.markdown("### Today")
+        for task in due_today:
+            _task_card(task, is_admin, "today")
 
-                        # ── Status-specific buttons ────────────────────
-                        if status == "Not Contacted":
-                            btn_c1, btn_c2, btn_c3 = st.columns(3)
-                            with btn_c1:
-                                if st.button("Log Call Attempt", key=f"call_lunch_{lunch['id']}"):
-                                    st.session_state[f"call_attempt_{lunch['id']}"] = True
-                            with btn_c2:
-                                if st.button("Schedule Lunch", key=f"sched_direct_{lunch['id']}"):
-                                    st.session_state[f"schedule_from_workflow_{lunch['id']}"] = True
-                            with btn_c3:
-                                if st.button("Mark Complete", key=f"comp_nc_{lunch['id']}"):
-                                    update_lunch(lunch["id"], {
-                                        "status": "Completed",
-                                        "completed_date": datetime.now().isoformat(),
-                                    })
-                                    st.rerun()
+    # ── Upcoming ───────────────────────────────────────────────────────
+    if upcoming:
+        st.markdown("### Upcoming (Next 3 Days)")
+        for task in upcoming:
+            _task_card(task, is_admin, "upcoming")
 
-                        elif status == "Attempting":
-                            btn_c1, btn_c2, btn_c3 = st.columns(3)
-                            with btn_c1:
-                                if st.button("Log Call Attempt", key=f"call_lunch_{lunch['id']}"):
-                                    st.session_state[f"call_attempt_{lunch['id']}"] = True
-                            with btn_c2:
-                                if st.button("Schedule Lunch", key=f"sched_att_{lunch['id']}"):
-                                    st.session_state[f"schedule_from_workflow_{lunch['id']}"] = True
-                            with btn_c3:
-                                if st.button("Give Up", key=f"giveup_{lunch['id']}"):
-                                    update_lunch(lunch["id"], {"status": "Not Contacted"})
-                                    st.rerun()
+    # ── No due date ────────────────────────────────────────────────────
+    if no_date:
+        st.markdown("### No Due Date")
+        for task in no_date:
+            _task_card(task, is_admin, "no_date")
 
-                        elif status == "Scheduled":
-                            btn_c1, btn_c2, btn_c3 = st.columns(3)
-                            with btn_c1:
-                                if st.button("Mark Completed", key=f"comp_{lunch['id']}"):
-                                    st.session_state[f"complete_prompt_{lunch['id']}"] = True
-                            with btn_c2:
-                                if st.button("Edit Details", key=f"edit_lunch_{lunch['id']}"):
-                                    st.session_state[f"edit_lunch_{lunch['id']}"] = True
-                            with btn_c3:
-                                if st.button("Cancel Lunch", key=f"cancel_{lunch['id']}"):
-                                    update_lunch(lunch["id"], {"status": "Not Contacted"})
-                                    st.rerun()
+    if not any([overdue, due_today, upcoming, no_date]):
+        st.info("No open tasks. Add one above or check the Contact Queue below.")
 
-                        # ── Schedule Lunch form (from Not Contacted / Attempting) ──
-                        if st.session_state.get(f"schedule_from_workflow_{lunch['id']}", False):
-                            _show_schedule_lunch_form(lunch)
+    # ── Completed today (collapsed) ────────────────────────────────────
+    if completed_today:
+        with st.expander(f"Completed Today ({len(completed_today)})", expanded=False):
+            for task in completed_today:
+                _task_card(task, is_admin, "completed")
 
-                        # ── Edit Scheduled Lunch ──
-                        if st.session_state.get(f"edit_lunch_{lunch['id']}", False):
-                            _show_edit_lunch_form(lunch)
-
-                        # ── Completion dialog ──
-                        if st.session_state.get(f"complete_prompt_{lunch['id']}", False):
-                            _show_complete_lunch_dialog(lunch)
-
-                        # ── Call attempt form ──
-                        if st.session_state.get(f"call_attempt_{lunch['id']}", False):
-                            _show_call_attempt_form(lunch)
-
-        # Start new lunch workflow
-        st.markdown("---")
-        st.markdown("### Start New Lunch Workflow")
-        practices = get_all_practices(status_filter="Active")
-        practice_names = {p["name"]: p["id"] for p in practices}
-        selected = st.selectbox("Select Practice", [""] + list(practice_names.keys()), key="new_lunch_practice")
-        if selected and st.button("Start Lunch Workflow"):
-            add_lunch({
-                "practice_id": practice_names[selected],
-                "status": "Not Contacted",
-            })
-            st.success(f"Lunch workflow started for {selected}")
-            st.rerun()
-
-    # ── Thank You Letters ──────────────────────────────────────────────
-    with tab_thankyou:
-        st.markdown("### Thank You Letter Tracking")
-
-        ty_tab_pending, ty_tab_mailed = st.tabs(["Pending", "Mailed"])
-
-        with ty_tab_pending:
-            pending = get_thank_yous(status_filter="Pending")
-            if not pending:
-                st.success("No pending thank you letters!")
-            else:
-                st.caption(f"{len(pending)} pending thank you letters")
-                for ty in pending:
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    col1.markdown(f"**{ty.get('provider_name', 'N/A')}** at {ty['practice_name']}")
-                    col2.markdown(f"Reason: {ty['reason']} | Created: {ty.get('created_at', '')[:10]}")
-                    with col3:
-                        if st.button("Mailed", key=f"mail_ty_{ty['id']}"):
-                            update_thank_you(ty["id"], {
-                                "status": "Mailed",
-                                "date_mailed": datetime.now().isoformat(),
-                            })
-                            st.rerun()
-
-                if st.button("Mark All as Mailed"):
-                    for ty in pending:
-                        update_thank_you(ty["id"], {
-                            "status": "Mailed",
-                            "date_mailed": datetime.now().isoformat(),
-                        })
-                    st.success(f"Marked {len(pending)} letters as mailed!")
-                    st.rerun()
-
-        with ty_tab_mailed:
-            mailed = get_thank_yous(status_filter="Mailed")
-            if mailed:
-                df = pd.DataFrame(mailed)
-                display_cols = ["provider_name", "practice_name", "reason", "date_mailed"]
-                available = [c for c in display_cols if c in df.columns]
-                st.dataframe(df[available], use_container_width=True, hide_index=True)
-            else:
-                st.info("No mailed letters yet.")
-
-        # Add manual thank you
-        st.markdown("---")
-        st.markdown("### Add Thank You Letter")
-        practices = get_all_practices(status_filter="Active")
-        practice_map = {p["name"]: p["id"] for p in practices}
-        ty_practice = st.selectbox("Practice", [""] + list(practice_map.keys()), key="ty_practice")
-        if ty_practice:
-            providers = get_providers_for_practice(practice_map[ty_practice])
-            prov_map = {p["name"]: p["id"] for p in providers}
-            ty_provider = st.selectbox("Provider (optional)", ["All providers"] + list(prov_map.keys()), key="ty_provider")
-            ty_reason = st.selectbox("Reason", ["New Referral", "Post-Lunch", "Other"], key="ty_reason")
-            if st.button("Add Thank You"):
-                if ty_provider == "All providers":
-                    for prov in providers:
-                        add_thank_you({
-                            "provider_id": prov["id"],
-                            "practice_id": practice_map[ty_practice],
-                            "reason": ty_reason,
-                            "status": "Pending",
-                        })
-                else:
-                    add_thank_you({
-                        "provider_id": prov_map[ty_provider],
-                        "practice_id": practice_map[ty_practice],
-                        "reason": ty_reason,
-                        "status": "Pending",
-                    })
-                st.success("Thank you letter(s) added!")
-                st.rerun()
-
-    # ── Cookie Visits ──────────────────────────────────────────────────
-    with tab_cookies:
-        st.markdown("### Cookie Visit Check-in")
-
-        with st.form("cookie_visit_form"):
-            practices = get_all_practices(status_filter="Active")
-            practice_map = {p["name"]: p["id"] for p in practices}
-            cookie_practice = st.selectbox("Practice", list(practice_map.keys()))
-            visit_date = st.date_input("Visit Date", value=datetime.now())
-            items = st.text_input("Items Delivered", placeholder="e.g., Cookies, brownies, treats")
-            delivered_by = st.selectbox("Delivered By", ["Robbie", "Darvin", "Other"])
-            cookie_notes = st.text_area("Notes")
-            st.markdown("---")
-            st.markdown("**Schedule next follow-up**")
-            schedule_next = st.checkbox("Schedule next cookie visit follow-up")
-            followup_type = None
-            followup_interval = None
-            custom_followup_date = None
-            if schedule_next:
-                followup_type = st.selectbox("Follow-up Type", [
-                    "Cookie Visit (3 months)",
-                    "Next Lunch (6 months)",
-                    "Follow-up Call",
-                    "Custom Activity",
-                ])
-                followup_interval = st.radio("Follow-up Interval", [
-                    "3 months from today",
-                    "6 months from today",
-                    "Custom date",
-                ], horizontal=True)
-                if followup_interval == "Custom date":
-                    custom_followup_date = st.date_input("Select follow-up date")
-
-            if st.form_submit_button("Log Cookie Visit", type="primary"):
-                data = {
-                    "practice_id": practice_map[cookie_practice],
-                    "visit_date": visit_date.isoformat(),
-                    "items_delivered": items,
-                    "delivered_by": delivered_by,
-                    "notes": cookie_notes,
-                    "status": "Completed",
-                }
-                if schedule_next and followup_interval == "Custom date" and custom_followup_date:
-                    data["next_visit_date"] = custom_followup_date.isoformat()
-                vid = add_cookie_visit(data)
-                # Add to events table so visit shows on calendar with a clickable ID
-                try:
-                    create_event({
-                        "practice_id": practice_map[cookie_practice],
-                        "event_type": "Cookie Visit",
-                        "label": f"Cookies - {cookie_practice}",
-                        "scheduled_date": visit_date.isoformat(),
-                        "status": "Completed",
-                        "created_by": "ui",
-                    })
-                except Exception:
-                    pass
-                add_contact_log({
-                    "practice_id": practice_map[cookie_practice],
-                    "contact_type": "Cookie Visit",
-                    "contact_date": visit_date.isoformat(),
-                    "team_member": delivered_by,
-                    "outcome": "Delivered",
-                    "notes": f"Items: {items}",
-                })
-                if schedule_next:
-                    try:
-                        if followup_interval == "Custom date" and custom_followup_date:
-                            next_date = custom_followup_date.isoformat()
-                        elif followup_interval == "6 months from today":
-                            next_date = (datetime.now() + timedelta(weeks=26)).date().isoformat()
-                        else:
-                            next_date = (datetime.now() + timedelta(weeks=13)).date().isoformat()
-
-                        fu_map = {
-                            "Cookie Visit (3 months)": "Cookie Visit",
-                            "Next Lunch (6 months)": "Lunch",
-                            "Follow-up Call": "Call",
-                            "Custom Activity": "Other",
-                        }
-                        evt_type = fu_map.get(followup_type, "Cookie Visit") if followup_type else "Cookie Visit"
-
-                        add_follow_up({
-                            "practice_id": practice_map[cookie_practice],
-                            "follow_up_type": evt_type,
-                            "follow_up_date": next_date,
-                            "interval": followup_interval,
-                            "status": "Scheduled",
-                            "notes": f"Follow-up after cookie visit on {visit_date}",
-                        })
-                        create_event({
-                            "practice_id": practice_map[cookie_practice],
-                            "event_type": evt_type,
-                            "label": f"{evt_type} - {cookie_practice}",
-                            "scheduled_date": next_date,
-                            "status": "Scheduled",
-                            "created_by": "ui",
-                        })
-                    except Exception:
-                        pass
-
-                st.success("Cookie visit logged!")
-                st.rerun()
-
-        # Recent cookie visits
-        from database import get_cookie_visits
-        recent = get_cookie_visits()
-        if recent:
-            st.markdown("### Recent Cookie Visits")
-            df = pd.DataFrame(recent[:20])
-            display_cols = ["practice_name", "visit_date", "items_delivered", "delivered_by"]
-            available = [c for c in display_cols if c in df.columns]
-            st.dataframe(df[available], use_container_width=True, hide_index=True)
+    st.markdown("---")
 
     # ── Contact Queue ──────────────────────────────────────────────────
-    with tab_contacts:
-        st.markdown("### Contact Queue")
-        st.markdown("Practices that need follow-up (phone, email, or fax):")
+    st.markdown("## Practices Waiting for Contact")
+    st.caption(
+        "Practices where at least one contact attempt has been made "
+        "but no lunch is scheduled yet."
+    )
+    _show_contact_queue()
 
-        practices = get_all_practices(status_filter="Active")
-        contact_queue = []
-        for p in practices:
-            contacts = get_contact_log(practice_id=p["id"], limit=1)
-            last_days = None
-            if contacts:
-                last_days = days_since(contacts[0].get("contact_date"))
-            call_count = get_call_attempt_count(p["id"])
-
-            entry = {
-                "practice": p["name"],
-                "practice_id": p["id"],
-                "last_contact_days": last_days if last_days else 999,
-                "phone": p.get("phone", ""),
-                "email": p.get("email", ""),
-                "fax_vonage_email": p.get("fax_vonage_email", ""),
-                "contact_person": p.get("contact_person", ""),
-                "call_attempts": call_count,
-            }
-            contact_queue.append(entry)
-
-        contact_queue.sort(key=lambda x: x["last_contact_days"], reverse=True)
-
-        for item in contact_queue[:30]:
-            days_text = f"{item['last_contact_days']} days ago" if item["last_contact_days"] < 999 else "Never contacted"
-
-            # Smart suggestion
-            suggestion = ""
-            if item["call_attempts"] >= 3:
-                suggestion = " — Try email or fax instead"
-
-            col1, col2, col3 = st.columns([3, 3, 2])
-            with col1:
-                st.markdown(f"**{item['practice']}**")
-                st.caption(f"Last: {days_text}{suggestion}")
-            with col2:
-                phone_html = format_phone_link(item["phone"]) if item["phone"] else "No phone"
-                email_html = format_email_link(item["email"]) if item["email"] else "No email"
-                st.markdown(f"{phone_html} &nbsp; {email_html}", unsafe_allow_html=True)
-            with col3:
-                bc1, bc2 = st.columns(2)
-                with bc1:
-                    if st.button("Log Contact", key=f"cq_{item['practice_id']}"):
-                        st.session_state.active_contact_form = item['practice_id']
-                        st.rerun()
-                with bc2:
-                    if st.button("Schedule", key=f"cq_sched_{item['practice_id']}"):
-                        st.session_state.active_lunch_form = item['practice_id']
-                        st.rerun()
+    # ── Log contact modal ──────────────────────────────────────────────
+    _render_contact_log_modal(team_members)
 
 
-# ── Helper forms ──────────────────────────────────────────────────────
+# ── Task card ─────────────────────────────────────────────────────────────────
 
-def _show_schedule_lunch_form(lunch):
-    """Show inline lunch scheduling form within the workflow."""
-    from database import update_lunch, get_call_attempts, create_event
-    with st.form(f"sched_form_{lunch['id']}"):
-        st.markdown(f"#### Schedule Lunch — {lunch.get('practice_name')}")
-        col_d, col_t = st.columns(2)
-        with col_d:
-            sched_date = st.date_input("Date *", value=datetime.now() + timedelta(days=7), key=f"sd_{lunch['id']}")
-        with col_t:
-            sched_time = st.text_input("Time *", placeholder="11:30 AM", key=f"st_{lunch['id']}")
-        staff_count = st.number_input("Attendees", min_value=1, value=5, key=f"sc_{lunch['id']}")
-        restaurant = st.text_input("Restaurant / Vendor", key=f"rest_{lunch['id']}")
-        dietary_notes = st.text_input("Dietary Restrictions", key=f"diet_{lunch['id']}")
-        confirmed_with = st.text_input("Confirmed With", key=f"conf_{lunch['id']}")
-        notes = st.text_area("Notes", height=60, key=f"notes_{lunch['id']}")
+def _task_card(task, is_admin, section):
+    from database import update_task
 
-        col_s, col_c = st.columns(2)
-        with col_s:
-            submitted = st.form_submit_button("Schedule Lunch", type="primary", use_container_width=True)
-        with col_c:
-            cancelled = st.form_submit_button("Cancel", use_container_width=True)
+    practice_name = task.get("practice_name") or ""
+    description   = task.get("description", "")
+    due_str       = (task.get("due_date") or "")[:10]
+    notes         = task.get("notes") or ""
 
-        if submitted:
-            if not (sched_time or "").strip():
-                st.error("Time is required")
-            else:
-                attempts = get_call_attempts(lunch_id=lunch["id"])
-                update_lunch(lunch["id"], {
-                    "status": "Scheduled",
-                    "scheduled_date": sched_date.isoformat(),
-                    "scheduled_time": sched_time,
-                    "staff_count": staff_count,
-                    "restaurant": restaurant,
-                    "dietary_notes": dietary_notes,
-                    "confirmed_with": confirmed_with,
-                    "visit_notes": notes,
-                })
-                # Create calendar event
-                try:
-                    create_event({
-                        "practice_id": lunch["practice_id"],
-                        "event_type": "Lunch",
-                        "label": f"Lunch - {lunch.get('practice_name', '')}",
-                        "scheduled_date": sched_date.isoformat(),
-                        "scheduled_time": sched_time,
-                        "status": "Scheduled",
-                        "notes": notes,
-                        "created_by": "ui",
-                    })
-                except Exception:
-                    pass
-                attempt_msg = f" after {len(attempts)} call attempt(s)" if attempts else ""
-                st.success(f"Lunch scheduled for {lunch.get('practice_name')}{attempt_msg}!")
-                st.session_state[f"schedule_from_workflow_{lunch['id']}"] = False
-                st.rerun()
-
-        if cancelled:
-            st.session_state[f"schedule_from_workflow_{lunch['id']}"] = False
-            st.rerun()
-
-
-def _show_edit_lunch_form(lunch):
-    """Show inline edit form for a scheduled lunch."""
-    from database import update_lunch
-    with st.form(f"edit_lunch_form_{lunch['id']}"):
-        st.markdown(f"#### Edit Lunch — {lunch.get('practice_name')}")
-        sd = lunch.get('scheduled_date', '')
+    extra = ""
+    if section == "overdue" and due_str:
         try:
-            dval = datetime.strptime(str(sd)[:10], "%Y-%m-%d") if sd else datetime.now()
+            days_over = (date.today() - date.fromisoformat(due_str)).days
+            extra = f" — **{days_over} day{'s' if days_over != 1 else ''} overdue**"
         except Exception:
-            dval = datetime.now()
-        sched_date = st.date_input("Date", value=dval, key=f"esd_{lunch['id']}")
-        sched_time = st.text_input("Time", value=lunch.get('scheduled_time', ''), key=f"est_{lunch['id']}")
-        staff_count = st.number_input("Attendees", min_value=1, value=lunch.get('staff_count', 5) or 5, key=f"esc_{lunch['id']}")
-        restaurant = st.text_input("Restaurant", value=lunch.get('restaurant', '') or '', key=f"erest_{lunch['id']}")
-        dietary_notes = st.text_input("Dietary Restrictions", value=lunch.get('dietary_notes', '') or '', key=f"ediet_{lunch['id']}")
-        confirmed_with = st.text_input("Confirmed With", value=lunch.get('confirmed_with', '') or '', key=f"econf_{lunch['id']}")
+            pass
+    elif section == "upcoming" and due_str:
+        try:
+            days_until = (date.fromisoformat(due_str) - date.today()).days
+            extra = f" — in {days_until} day{'s' if days_until != 1 else ''}"
+        except Exception:
+            pass
 
-        col_s, col_c = st.columns(2)
-        with col_s:
-            if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
-                update_lunch(lunch["id"], {
-                    "scheduled_date": sched_date.isoformat(),
-                    "scheduled_time": sched_time,
-                    "staff_count": staff_count,
-                    "restaurant": restaurant,
-                    "dietary_notes": dietary_notes,
-                    "confirmed_with": confirmed_with,
+    col1, col2, col3 = st.columns([4, 2, 1])
+
+    with col1:
+        header = f"**{practice_name}**" if practice_name else "**General Task**"
+        if is_admin and task.get("assigned_to"):
+            header += f"  *({task['assigned_to']})*"
+        st.markdown(header)
+        st.markdown(f"{description}{extra}")
+        if notes:
+            with st.expander("View Notes", expanded=False):
+                st.caption(notes)
+
+    with col2:
+        if due_str:
+            st.caption(f"Due: {due_str}")
+
+    with col3:
+        if section != "completed":
+            if st.button(
+                "Mark Done",
+                key=f"done_{task['id']}_{section}",
+                type="primary",
+                use_container_width=True,
+            ):
+                update_task(task["id"], {
+                    "status": "done",
+                    "completed_at": datetime.now().isoformat(),
                 })
-                st.session_state[f"edit_lunch_{lunch['id']}"] = False
-                st.success("Lunch updated!")
                 st.rerun()
-        with col_c:
-            if st.form_submit_button("Cancel", use_container_width=True):
-                st.session_state[f"edit_lunch_{lunch['id']}"] = False
+        else:
+            st.caption("Done")
+
+    st.divider()
+
+
+# ── Add task form ─────────────────────────────────────────────────────────────
+
+def _show_add_task_form(team_members, current_user, is_admin):
+    from database import get_all_practices, add_task
+
+    practices = get_all_practices(status_filter="Active")
+    practice_options = ["(No specific practice)"] + [p["name"] for p in practices]
+    practice_id_map  = {p["name"]: p["id"] for p in practices}
+
+    with st.form("add_task_form", clear_on_submit=True):
+        selected_practice = st.selectbox("Practice (optional)", practice_options)
+        description = st.text_input("Task *", placeholder="e.g., Call back, Follow up, Order catering")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            due_date = st.date_input("Due Date", value=date.today())
+        with col2:
+            if is_admin and team_members:
+                assigned_to = st.selectbox("Assign To", [""] + team_members)
+            else:
+                assigned_to = current_user
+                st.text(f"Assigned to: {current_user}")
+
+        notes = st.text_area("Notes (optional)", height=60)
+
+        if st.form_submit_button("Add Task", type="primary"):
+            if not description.strip():
+                st.error("Task description is required.")
+            else:
+                practice_id = practice_id_map.get(selected_practice)
+                add_task({
+                    "practice_id":  practice_id,
+                    "description":  description.strip(),
+                    "assigned_to":  assigned_to or current_user,
+                    "due_date":     due_date.isoformat(),
+                    "notes":        notes.strip(),
+                    "status":       "open",
+                    "created_at":   datetime.now().isoformat(),
+                })
+                st.success("Task added!")
                 st.rerun()
 
 
-def _show_complete_lunch_dialog(lunch):
-    """Show completion dialog with follow-up scheduling."""
-    from database import (update_lunch, get_providers_for_practice, add_thank_you,
-                          add_contact_log, add_follow_up, create_event)
-    st.markdown(f"#### Mark Lunch Completed — {lunch.get('practice_name')}")
-    schedule_next = st.checkbox("Schedule next follow-up?", value=False, key=f"sn_{lunch['id']}")
-    followup_type = None
-    interval = None
-    custom_date = None
-    if schedule_next:
-        followup_type = st.selectbox("Follow-up Type", [
-            "Next Lunch (6 months)",
-            "Cookie Visit (3 months)",
-            "Follow-up Call",
-            "Send Flyer",
-            "Thank You Letter",
-            "Custom Activity",
-        ], key=f"ft_{lunch['id']}")
-        interval = st.radio("Interval", [
-            "3 months from today",
-            "6 months from today",
-            "Custom date",
-        ], horizontal=True, key=f"int_{lunch['id']}")
-        if interval == "Custom date":
-            custom_date = st.date_input("Select date", key=f"cd_{lunch['id']}")
+# ── Contact queue ─────────────────────────────────────────────────────────────
 
-    if st.button("Confirm Completed", key=f"cc_{lunch['id']}"):
-        update_lunch(lunch["id"], {
-            "status": "Completed",
-            "completed_date": datetime.now().isoformat(),
-        })
-        # Auto-generate thank you letters
-        providers = get_providers_for_practice(lunch["practice_id"])
-        for prov in providers:
-            add_thank_you({
-                "provider_id": prov["id"],
-                "practice_id": lunch["practice_id"],
-                "lunch_id": lunch["id"],
-                "reason": "Post-Lunch",
-                "status": "Pending",
+def _show_contact_queue():
+    from database import get_all_practices, get_contact_log, get_lunches, get_call_attempt_count
+    from utils import format_phone_link
+
+    practices = get_all_practices(status_filter="Active")
+    queue = []
+
+    for p in practices:
+        contacts    = get_contact_log(practice_id=p["id"], limit=5)
+        lunches     = get_lunches(practice_id=p["id"])
+        call_count  = get_call_attempt_count(p["id"])
+
+        has_contact = bool(contacts)
+        has_lunch   = any(l.get("status") in ("Scheduled", "Completed") for l in lunches)
+
+        if has_contact and not has_lunch and call_count > 0:
+            last = contacts[0]
+            queue.append({
+                "practice":          p["name"],
+                "practice_id":       p["id"],
+                "last_contact_date": (last.get("contact_date") or "")[:10],
+                "last_contact_type": last.get("contact_type", ""),
+                "attempt_count":     call_count,
+                "phone":             p.get("phone", ""),
             })
-        add_contact_log({
-            "practice_id": lunch["practice_id"],
-            "contact_type": "Lunch",
-            "contact_date": datetime.now().isoformat(),
-            "team_member": "Robbie",
-            "outcome": "Completed",
-            "notes": f"Lunch completed at {lunch.get('restaurant', '')}",
-        })
-        # Schedule follow-up if requested
-        if schedule_next:
-            try:
-                if interval == "Custom date" and custom_date:
-                    next_date = custom_date.isoformat()
-                elif interval == "6 months from today":
-                    next_date = (datetime.now() + timedelta(weeks=26)).date().isoformat()
-                else:
-                    next_date = (datetime.now() + timedelta(weeks=13)).date().isoformat()
 
-                fu_map = {
-                    "Next Lunch (6 months)": "Lunch",
-                    "Cookie Visit (3 months)": "Cookie Visit",
-                    "Follow-up Call": "Call",
-                    "Send Flyer": "Other",
-                    "Thank You Letter": "Other",
-                    "Custom Activity": "Other",
-                }
-                evt_type = fu_map.get(followup_type, "Lunch") if followup_type else "Lunch"
+    # Sort oldest contact first
+    queue.sort(key=lambda x: x["last_contact_date"])
 
-                add_follow_up({
-                    "practice_id": lunch["practice_id"],
-                    "follow_up_type": evt_type,
-                    "follow_up_date": next_date,
-                    "interval": interval,
-                    "status": "Scheduled",
-                    "notes": f"Follow-up after completed lunch",
-                })
-                create_event({
-                    "practice_id": lunch["practice_id"],
-                    "event_type": evt_type,
-                    "label": f"{evt_type} - {lunch.get('practice_name')}",
-                    "scheduled_date": next_date,
-                    "status": "Scheduled",
-                    "created_by": "ui",
-                })
-            except Exception:
-                pass
-        st.success(f"Lunch completed! {len(providers)} thank you letters auto-generated.")
-        st.session_state[f"complete_prompt_{lunch['id']}"] = False
-        st.rerun()
+    if not queue:
+        st.info("No practices waiting for follow-up contact right now.")
+        return
+
+    st.caption(f"{len(queue)} practices waiting for follow-up")
+
+    for item in queue[:30]:
+        col1, col2, col3 = st.columns([3, 3, 1])
+        with col1:
+            st.markdown(f"**{item['practice']}**")
+            st.caption(
+                f"Last: {item['last_contact_date']} ({item['last_contact_type']}) "
+                f"· {item['attempt_count']} attempt(s)"
+            )
+        with col2:
+            phone_html = format_phone_link(item["phone"]) if item["phone"] else "No phone on file"
+            st.markdown(phone_html, unsafe_allow_html=True)
+        with col3:
+            if st.button("Log Contact", key=f"cq_{item['practice_id']}"):
+                st.session_state.active_contact_form = item["practice_id"]
+                st.rerun()
+
+        st.divider()
 
 
-def _show_call_attempt_form(lunch):
-    """Show call attempt logging form."""
-    from database import add_call_attempt, update_lunch
-    with st.form(f"call_form_{lunch['id']}"):
-        st.markdown("#### Log Call Attempt")
-        call_date = st.date_input("Date", value=datetime.now(), key=f"cad_{lunch['id']}")
-        call_time = st.text_input("Time", key=f"cat_{lunch['id']}")
-        person = st.text_input("Person Contacted", key=f"cap_{lunch['id']}")
-        outcome = st.selectbox("Outcome", ["No Answer", "Left Message", "Spoke With", "Scheduled", "Call Back"], key=f"cao_{lunch['id']}")
-        notes = st.text_input("Notes", key=f"can_{lunch['id']}")
-        if st.form_submit_button("Save Call"):
-            add_call_attempt({
-                "lunch_id": lunch["id"],
-                "practice_id": lunch["practice_id"],
-                "call_date": call_date.isoformat(),
-                "call_time": call_time,
-                "person_contacted": person,
-                "outcome": outcome,
-                "notes": notes,
-            })
-            if lunch["status"] == "Not Contacted":
-                update_lunch(lunch["id"], {"status": "Attempting"})
-            st.session_state[f"call_attempt_{lunch['id']}"] = False
-            st.success("Call attempt logged!")
-            st.rerun()
+# ── Log contact modal ─────────────────────────────────────────────────────────
+
+def _render_contact_log_modal(team_members):
+    if not st.session_state.get("active_contact_form"):
+        return
+
+    from database import get_all_practices, add_contact_log
+
+    practice_id = st.session_state.active_contact_form
+    practices   = get_all_practices()
+    practice    = next((p for p in practices if p["id"] == practice_id), None)
+    pname       = practice["name"] if practice else "Practice"
+
+    @st.dialog(f"Log Contact — {pname}")
+    def _dialog():
+        with st.form("log_contact_modal"):
+            contact_type = st.selectbox("Contact Type", [
+                "Phone Call", "Email", "Fax", "In-Person Visit",
+                "Lunch", "Cookie Visit", "Other",
+            ])
+            contact_date = st.date_input("Date", value=date.today())
+            member_opts  = team_members if team_members else ["Robbie", "Kianah"]
+            team_member  = st.selectbox("Team Member", member_opts)
+            outcome      = st.selectbox("Outcome", [
+                "No Answer", "Left Message", "Spoke With",
+                "Scheduled", "Call Back", "Completed",
+            ])
+            notes = st.text_area("Notes", height=80)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.form_submit_button("Save", type="primary", use_container_width=True):
+                    add_contact_log({
+                        "practice_id":  practice_id,
+                        "contact_type": contact_type,
+                        "contact_date": contact_date.isoformat(),
+                        "team_member":  team_member,
+                        "outcome":      outcome,
+                        "notes":        notes,
+                    })
+                    st.session_state.active_contact_form = None
+                    st.success("Contact logged!")
+                    st.rerun()
+            with c2:
+                if st.form_submit_button("Cancel", use_container_width=True):
+                    st.session_state.active_contact_form = None
+                    st.rerun()
+
+    _dialog()
