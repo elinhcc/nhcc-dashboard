@@ -27,8 +27,7 @@ except Exception:
     _startup_error = _tb.format_exc()
 
 # ── Session state initialization (MUST be before any widgets) ─────────
-st.session_state.setdefault("authenticated", False)
-st.session_state.setdefault("current_user", "")
+st.session_state.setdefault("user", None)                   # logged-in user dict or None
 st.session_state.setdefault("active_contact_form", None)   # practice_id or None
 st.session_state.setdefault("active_lunch_form", None)      # practice_id or None
 st.session_state.setdefault("show_contact_success", None)   # message or None
@@ -38,13 +37,13 @@ st.session_state.setdefault("active_event_id", None)
 st.session_state.setdefault("active_fax_form", None)       # practice_id or None
 st.session_state.setdefault("contact_type_default", None)   # e.g. "Email Sent"
 
-# Custom CSS — ensures text is always readable on all backgrounds
+# Custom CSS — light clinical theme
 st.markdown("""
 <style>
     /* ── Main layout ─────────────────────────────────────── */
     .main .block-container { padding-top: 1rem; }
 
-    /* ── Global text: white on dark theme backgrounds ───── */
+    /* ── Global text: dark on light background ───────────── */
     .main, .main .block-container,
     .main .stMarkdown, .main .stMarkdown p,
     .main .stMarkdown h1, .main .stMarkdown h2,
@@ -52,28 +51,29 @@ st.markdown("""
     .main .stMarkdown li, .main .stMarkdown span,
     .main label, .main .stCaption, .main caption,
     .main .stAlert p {
-        color: #FFFFFF !important;
+        color: #1E293B !important;
     }
 
     /* ── Metrics ──────────────────────────────────────────── */
     div[data-testid="stMetric"] {
-        background: #1e1e2f;
+        background: #FFFFFF;
         padding: 12px;
         border-radius: 8px;
-        border: 1px solid #333;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
     div[data-testid="stMetric"] label,
     div[data-testid="stMetric"] div {
-        color: #FFFFFF !important;
+        color: #1E293B !important;
     }
 
     /* ── Score colors ─────────────────────────────────────── */
-    .score-high { color: #28a745; font-weight: bold; }
-    .score-med  { color: #ffc107; font-weight: bold; }
-    .score-low  { color: #dc3545; font-weight: bold; }
+    .score-high { color: #16a34a; font-weight: bold; }
+    .score-med  { color: #d97706; font-weight: bold; }
+    .score-low  { color: #dc2626; font-weight: bold; }
 
-    /* ── Sidebar: dark background, white text ─────────────── */
-    section[data-testid="stSidebar"] { background: #1a1a2e; }
+    /* ── Sidebar: teal background, white text ─────────────── */
+    section[data-testid="stSidebar"] { background: #0D9488; }
     section[data-testid="stSidebar"] * { color: #FFFFFF !important; }
     section[data-testid="stSidebar"] .stMarkdown,
     section[data-testid="stSidebar"] .stMarkdown p,
@@ -82,9 +82,15 @@ st.markdown("""
         color: #FFFFFF !important;
     }
 
-    /* ── Buttons: white text ──────────────────────────────── */
+    /* ── Buttons: teal with white text ───────────────────── */
     .stButton > button {
         color: #FFFFFF !important;
+        background-color: #0D9488 !important;
+        border: none !important;
+        border-radius: 6px !important;
+    }
+    .stButton > button:hover {
+        background-color: #0F766E !important;
     }
 
     /* ── Form labels & inputs ─────────────────────────────── */
@@ -93,31 +99,31 @@ st.markdown("""
     .stTimeInput label, .stNumberInput label,
     .stRadio label, .stCheckbox label,
     .stMultiSelect label {
-        color: #FFFFFF !important;
+        color: #1E293B !important;
     }
 
     /* ── Expander headers ─────────────────────────────────── */
     .streamlit-expanderHeader, .streamlit-expanderHeader p {
-        color: #FFFFFF !important;
+        color: #1E293B !important;
     }
 
     /* ── Tabs ─────────────────────────────────────────────── */
     .stTabs [data-baseweb="tab"] {
-        color: #FFFFFF !important;
+        color: #1E293B !important;
     }
 
     /* ── Table / dataframe text ────────────────────────────── */
     .stDataFrame, .stDataFrame td, .stDataFrame th,
     .stTable td, .stTable th {
-        color: #FFFFFF !important;
+        color: #1E293B !important;
     }
 
     /* ── Success / error / info / warning messages ─────────── */
     .stAlert p, .stAlert span, .stAlert div {
-        color: #1a1a2e !important;
+        color: #1E293B !important;
     }
 
-    /* ── Modal / dialog popups: LIGHT background, DARK text ─ */
+    /* ── Modal / dialog popups ───────────────────────────── */
     div[data-testid="stDialog"],
     div[data-testid="stModal"],
     div[role="dialog"] {
@@ -127,32 +133,21 @@ st.markdown("""
     div[data-testid="stDialog"] *,
     div[data-testid="stModal"] *,
     div[role="dialog"] * {
-        color: #1a1a1a !important;
+        color: #1E293B !important;
     }
     div[data-testid="stDialog"] .stButton > button,
     div[data-testid="stModal"] .stButton > button,
     div[role="dialog"] .stButton > button {
         color: #FFFFFF !important;
-        background-color: #4CAF50;
-    }
-    div[data-testid="stDialog"] .stMarkdown h1,
-    div[data-testid="stDialog"] .stMarkdown h2,
-    div[data-testid="stDialog"] .stMarkdown h3,
-    div[data-testid="stModal"] .stMarkdown h1,
-    div[data-testid="stModal"] .stMarkdown h2,
-    div[data-testid="stModal"] .stMarkdown h3,
-    div[role="dialog"] .stMarkdown h1,
-    div[role="dialog"] .stMarkdown h2,
-    div[role="dialog"] .stMarkdown h3 {
-        color: #1a1a1a !important;
+        background-color: #0D9488 !important;
     }
     div[data-testid="stDialog"] label,
     div[data-testid="stModal"] label,
     div[role="dialog"] label {
-        color: #333333 !important;
+        color: #1E293B !important;
     }
 
-    /* ── Input fields: white bg, black text for readability ────── */
+    /* ── Input fields: white bg, dark text ───────────────── */
     .main input, .main textarea, .main select,
     .stTextInput input, .stTextArea textarea,
     .stSelectbox select, .stDateInput input,
@@ -161,62 +156,79 @@ st.markdown("""
     div[data-baseweb="textarea"] textarea,
     div[data-baseweb="select"] > div {
         background-color: #FFFFFF !important;
-        color: #000000 !important;
+        color: #1E293B !important;
+        border: 1px solid #CBD5E1 !important;
     }
-    /* Select dropdown text */
     div[data-baseweb="select"] span,
     div[data-baseweb="select"] div[class*="value"] {
-        color: #000000 !important;
+        color: #1E293B !important;
     }
 
-    /* ── Clickable contact methods ──────────────────────────────── */
+    /* ── Clickable contact methods ──────────────────────────── */
     a.contact-phone {
-        color: #4A9EFF !important;
+        color: #0D9488 !important;
         text-decoration: none;
         cursor: pointer;
     }
     a.contact-phone:hover { text-decoration: underline; }
 
     a.contact-email {
-        color: #50C878 !important;
+        color: #0D9488 !important;
         text-decoration: none;
         cursor: pointer;
     }
     a.contact-email:hover { text-decoration: underline; }
 
     a.contact-fax {
-        color: #FF8C42 !important;
+        color: #6366F1 !important;
         text-decoration: none;
         cursor: pointer;
     }
     a.contact-fax:hover { text-decoration: underline; }
 
-    /* ── Calendar event cells: ensure text readable on colors ── */
-    .cal-event-blue  { color: #FFFFFF; background: #007bff; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
-    .cal-event-green { color: #FFFFFF; background: #28a745; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
-    .cal-event-yellow { color: #000000; background: #ffc107; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
-    .cal-event-pink  { color: #FFFFFF; background: #e83e8c; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
-    .cal-event-gray  { color: #FFFFFF; background: #6c757d; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
-    .cal-event-orange { color: #FFFFFF; background: #FF8C42; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+    a.contact-website {
+        color: #0D9488 !important;
+        text-decoration: none;
+        cursor: pointer;
+    }
+    a.contact-website:hover { text-decoration: underline; }
 
-    /* ── Provider card on dark bg ───────────────────────────────── */
+    /* ── Calendar event cells ─────────────────────────────── */
+    .cal-event-blue  { color: #FFFFFF; background: #0D9488; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+    .cal-event-green { color: #FFFFFF; background: #16a34a; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+    .cal-event-yellow { color: #1E293B; background: #fbbf24; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+    .cal-event-pink  { color: #FFFFFF; background: #e83e8c; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+    .cal-event-gray  { color: #FFFFFF; background: #64748b; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+    .cal-event-orange { color: #FFFFFF; background: #ea580c; padding: 2px 4px; border-radius: 3px; display: inline-block; margin: 1px 0; font-size: 0.8em; }
+
+    /* ── Provider card ────────────────────────────────────── */
     .provider-card {
         border-left-width: 4px;
         border-left-style: solid;
         padding: 12px;
         margin-bottom: 12px;
-        background: #1e1e2f;
+        background: #FFFFFF;
         border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
-    .provider-card strong { color: #FFFFFF; }
-    .provider-card small { color: #ccc; }
+    .provider-card strong { color: #1E293B; }
+    .provider-card small { color: #64748b; }
+
+    /* ── Hide Streamlit branding, GitHub icon, deploy button ───── */
+    #MainMenu                         { display: none !important; }
+    footer                            { display: none !important; }
+    .stAppDeployButton                { display: none !important; }
+    [data-testid="stToolbar"]         { display: none !important; }
+    [data-testid="stHeader"]          { visibility: hidden !important; }
+    .viewerBadge_container__1QSob     { display: none !important; }
+    ._profileContainer_1yi6l_53       { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
 def check_login():
-    """Simple password login."""
-    if st.session_state.authenticated:
+    """Multi-user username + password login."""
+    if st.session_state.get("user"):
         return True
 
     st.markdown("## 🏥 NHCC Provider Outreach Dashboard")
@@ -225,24 +237,36 @@ def check_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("### Login")
+        username = st.text_input("Username", key="login_user")
         password = st.text_input("Password", type="password", key="login_pw")
-        if st.button("Login", use_container_width=True):
-            config = load_config()
-            stored_hash = config.get("app_password_hash", "")
-            if not stored_hash:
-                # No password set yet - first run, accept anything or set default
-                st.session_state.authenticated = True
-                st.rerun()
+        if st.button("Login", use_container_width=True, type="primary"):
+            if not username.strip():
+                st.error("Please enter your username")
             else:
-                import bcrypt
-                if bcrypt.checkpw(password.encode(), stored_hash.encode()):
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    st.error("Incorrect password")
-        if not load_config().get("app_password_hash"):
-            st.info("No password set. Click Login to enter. Set a password in Settings.")
-    return st.session_state.authenticated
+                try:
+                    import bcrypt
+                    from database import get_user_by_username, update_last_login
+                    user = get_user_by_username(username.strip().lower())
+                    if user and bcrypt.checkpw(
+                        password.encode(), user["password_hash"].encode()
+                    ):
+                        update_last_login(user["id"])
+                        st.session_state.user = {
+                            "id":        user["id"],
+                            "username":  user["username"],
+                            "full_name": user.get("full_name") or user["username"],
+                            "role":      user.get("role", "staff"),
+                        }
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+                except Exception as e:
+                    st.error(f"Login error: {e}")
+                    st.info(
+                        "If this is the first setup, run `python setup_users.py` "
+                        "locally to create the users table and default admin account."
+                    )
+    return bool(st.session_state.get("user"))
 
 
 def main():
@@ -269,59 +293,44 @@ def main():
     # Initialize database (safe — creates schema if DB doesn't exist yet)
     try:
         init_db()
+        from database import ensure_default_admin
+        ensure_default_admin()
     except Exception:
         pass  # DB will be created when user uploads data
 
     if not check_login():
         return
 
+    current_user = st.session_state.get("user", {})
+    is_admin = current_user.get("role") == "admin"
+
     # Sidebar navigation
     with st.sidebar:
         st.markdown("## 🏥 NHCC Outreach")
+        st.caption(f"👤 {current_user.get('full_name', 'User')} ({current_user.get('role', '').capitalize()})")
         st.markdown("---")
 
-        _nav_pages = [
+        nav_options = [
             "📊 Dashboard",
             "🏢 Providers",
             "📋 Action Items",
             "📅 Calendar",
             "📨 Flyer Campaigns",
             "📈 Analytics",
-            "⚙️ Settings",
         ]
+        if is_admin:
+            nav_options += ["⚙️ Settings", "👥 User Management"]
+
         _nav_override = st.session_state.pop("_nav_override", None)
-        _default_idx  = 0
+        _default_idx = 0
         if _nav_override == "My Daily Work":
             _default_idx = 2  # "📋 Action Items"
         page = st.radio(
             "Navigation",
-            _nav_pages,
+            nav_options,
             index=_default_idx,
             label_visibility="collapsed",
         )
-
-        st.markdown("---")
-
-        # Who are you? (user identity for task filtering)
-        try:
-            _cfg = load_config()
-            _members = _cfg.get("team_members", [])
-            if _members:
-                _user_options = ["Admin"] + _members
-                _cur = st.session_state.get("current_user", "") or "Admin"
-                if _cur not in _user_options:
-                    _cur = "Admin"
-                _selected = st.selectbox(
-                    "You are:",
-                    _user_options,
-                    index=_user_options.index(_cur),
-                    key="sidebar_user_selector",
-                )
-                if _selected != st.session_state.get("current_user"):
-                    st.session_state.current_user = _selected
-                    st.rerun()
-        except Exception:
-            pass
 
         st.markdown("---")
 
@@ -339,7 +348,7 @@ def main():
 
         st.markdown("---")
         if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.authenticated = False
+            st.session_state.user = None
             st.rerun()
 
     # Route to page — always allow navigation, pages handle empty state
@@ -361,9 +370,12 @@ def main():
     elif page == "📈 Analytics":
         from pages.analytics import show_analytics
         show_analytics()
-    elif page == "⚙️ Settings":
+    elif page == "⚙️ Settings" and is_admin:
         from pages.settings import show_settings
         show_settings()
+    elif page == "👥 User Management" and is_admin:
+        from pages.user_management import show_user_management
+        show_user_management()
 
     # Render modal dialogs for contact/lunch/fax forms if active
     try:

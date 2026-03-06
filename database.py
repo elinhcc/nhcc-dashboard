@@ -92,30 +92,10 @@ def get_connection():
     return _sqlite()
 
 
-_TASKS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id BIGSERIAL PRIMARY KEY,
-    practice_id BIGINT REFERENCES practices(id),
-    description TEXT NOT NULL,
-    assigned_to TEXT,
-    due_date DATE,
-    status TEXT DEFAULT 'open',
-    notes TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    completed_at TIMESTAMPTZ
-);
-"""
-
-
 def init_db():
-    """Create SQLite schema. For Supabase, attempts to create tasks table via RPC if missing."""
+    """Create SQLite schema (no-op when using Supabase — tables live in Postgres)."""
     if _supa():
-        # Try to ensure tasks table exists in Supabase via rpc exec_sql (if available)
-        try:
-            _supa().rpc("exec_sql", {"sql": _TASKS_TABLE_SQL}).execute()
-        except Exception:
-            pass  # RPC not available — table must be created manually in Supabase SQL editor
-        return
+        return  # Schema is managed in Supabase SQL editor
     conn = _sqlite()
     c = conn.cursor()
     c.executescript("""
@@ -126,6 +106,7 @@ def init_db():
         zip_code TEXT,
         location_category TEXT DEFAULT 'Other',
         website TEXT,
+        specialty TEXT,
         contact_person TEXT,
         phone TEXT,
         fax TEXT,
@@ -282,15 +263,25 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        practice_id INTEGER,
-        description TEXT NOT NULL,
-        assigned_to TEXT,
+        practice_id INTEGER NOT NULL,
+        task_type TEXT NOT NULL,
+        description TEXT,
         due_date DATE,
-        status TEXT DEFAULT 'open',
-        notes TEXT,
+        assigned_to TEXT,
+        is_complete INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         completed_at DATETIME,
         FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        full_name TEXT,
+        role TEXT DEFAULT 'staff',
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_login DATETIME
     );
     """)
     _migrate_column(c, "contact_log", "purpose", "TEXT")
@@ -300,9 +291,8 @@ def init_db():
     _migrate_column(c, "contact_log", "fax_document", "TEXT")
     _migrate_column(c, "cookie_visits", "status", "TEXT DEFAULT 'Logged'")
     _migrate_column(c, "cookie_visits", "next_visit_date", "DATETIME")
-    _migrate_column(c, "tasks", "assigned_to", "TEXT")
+    _migrate_column(c, "practices", "specialty", "TEXT")
     _migrate_column(c, "tasks", "notes", "TEXT")
-    _migrate_column(c, "tasks", "completed_at", "DATETIME")
     conn.commit()
     conn.close()
 
@@ -943,6 +933,100 @@ def update_follow_up(follow_up_id: int, data: dict):
     conn.close()
 
 
+# ── Tasks ─────────────────────────────────────────────────────────────────────
+
+def _add_business_days(start_date, days: int):
+    """Return a date N business days after start_date (Mon–Fri)."""
+    from datetime import timedelta
+    current = start_date
+    added = 0
+    while added < days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current
+
+
+def add_task(data: dict) -> int:
+    supa = _supa()
+    if supa:
+        d = dict(data)
+        if "is_complete" in d:
+            d["is_complete"] = bool(d["is_complete"])
+        result = supa.table("tasks").insert(d).execute()
+        return result.data[0]["id"]
+    conn = _sqlite()
+    cols = ", ".join(data.keys())
+    placeholders = ", ".join(["?"] * len(data))
+    cur = conn.execute(f"INSERT INTO tasks ({cols}) VALUES ({placeholders})", list(data.values()))
+    conn.commit()
+    tid = cur.lastrowid
+    conn.close()
+    return tid
+
+
+def get_tasks(practice_id=None, is_complete=None, due_before=None, assigned_to=None):
+    supa = _supa()
+    if supa:
+        try:
+            q = supa.table("tasks").select("*, practices(name)").order("due_date")
+            if practice_id:
+                q = q.eq("practice_id", practice_id)
+            if is_complete is not None:
+                q = q.eq("is_complete", bool(is_complete))
+            if due_before:
+                q = q.lte("due_date", due_before)
+            if assigned_to:
+                q = q.eq("assigned_to", assigned_to)
+            rows = q.execute().data or []
+            for row in rows:
+                _pop_embed(row, "practices", "practice_name")
+            return rows
+        except Exception:
+            return []
+    conn = _sqlite()
+    try:
+        query = ("SELECT t.*, pr.name as practice_name FROM tasks t "
+                 "LEFT JOIN practices pr ON t.practice_id=pr.id")
+        conditions, params = [], []
+        if practice_id:
+            conditions.append("t.practice_id=?")
+            params.append(practice_id)
+        if is_complete is not None:
+            conditions.append("t.is_complete=?")
+            params.append(1 if is_complete else 0)
+        if due_before:
+            conditions.append("t.due_date<=?")
+            params.append(due_before)
+        if assigned_to:
+            conditions.append("t.assigned_to=?")
+            params.append(assigned_to)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY t.due_date ASC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        conn.close()
+        return []
+
+
+def update_task(task_id: int, data: dict):
+    supa = _supa()
+    if supa:
+        d = dict(data)
+        if "is_complete" in d:
+            d["is_complete"] = bool(d["is_complete"])
+        supa.table("tasks").update(d).eq("id", task_id).execute()
+        return
+    conn = _sqlite()
+    sets = ", ".join(f"{k}=?" for k in data)
+    conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", list(data.values()) + [task_id])
+    conn.commit()
+    conn.close()
+
+
 # ── Dashboard Stats ───────────────────────────────────────────────────────────
 
 def get_dashboard_stats() -> dict:
@@ -993,6 +1077,39 @@ def get_dashboard_stats() -> dict:
         stats["faxes_this_month"] = _count_month("contact_log", "contact_date", contact_type="Fax Sent")
         stats["huntsville_practices"] = _count("practices", location_category="Huntsville", status="Active")
         stats["woodlands_practices"] = _count("practices", location_category="Woodlands", status="Active")
+
+        # Task stats
+        today_str = date.today().isoformat()
+        try:
+            stats["tasks_due_today"] = (
+                supa.table("tasks").select("id", count="exact")
+                .eq("is_complete", False).lte("due_date", today_str).execute().count or 0
+            )
+            stats["tasks_overdue"] = (
+                supa.table("tasks").select("id", count="exact")
+                .eq("is_complete", False).lt("due_date", today_str).execute().count or 0
+            )
+        except Exception:
+            stats["tasks_due_today"] = 0
+            stats["tasks_overdue"] = 0
+
+        # Needs attention: 3+ phone calls, no lunch scheduled
+        try:
+            from collections import Counter as _Counter
+            phone_logs = (supa.table("contact_log").select("practice_id")
+                          .eq("contact_type", "Phone Call").execute().data or [])
+            phone_counts = _Counter(r["practice_id"] for r in phone_logs)
+            high_attn = {pid for pid, cnt in phone_counts.items() if cnt >= 3}
+            if high_attn:
+                scheduled = (supa.table("lunch_tracking").select("practice_id")
+                             .in_("status", ["Scheduled", "Completed"]).execute().data or [])
+                scheduled_pids = {r["practice_id"] for r in scheduled}
+                stats["needs_attention"] = len(high_attn - scheduled_pids)
+            else:
+                stats["needs_attention"] = 0
+        except Exception:
+            stats["needs_attention"] = 0
+
         return stats
 
     conn = _sqlite()
@@ -1030,6 +1147,34 @@ def get_dashboard_stats() -> dict:
     stats["woodlands_practices"] = conn.execute(
         "SELECT COUNT(*) FROM practices WHERE location_category='Woodlands' AND status='Active'"
     ).fetchone()[0]
+
+    today_str = date.today().isoformat()
+    try:
+        stats["tasks_due_today"] = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE is_complete=0 AND due_date<=?", (today_str,)
+        ).fetchone()[0]
+        stats["tasks_overdue"] = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE is_complete=0 AND due_date<?", (today_str,)
+        ).fetchone()[0]
+    except Exception:
+        stats["tasks_due_today"] = 0
+        stats["tasks_overdue"] = 0
+
+    try:
+        stats["needs_attention"] = conn.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT practice_id FROM contact_log
+                WHERE contact_type='Phone Call'
+                GROUP BY practice_id HAVING COUNT(*) >= 3
+            ) subq
+            WHERE subq.practice_id NOT IN (
+                SELECT practice_id FROM lunch_tracking
+                WHERE status IN ('Scheduled', 'Completed')
+            )
+        """).fetchone()[0]
+    except Exception:
+        stats["needs_attention"] = 0
+
     conn.close()
     return stats
 
@@ -1112,7 +1257,7 @@ def delete_event(event_id: int):
 def list_events(practice_id=None, event_type=None, month=None, year=None):
     supa = _supa()
     if supa:
-        q = supa.table("events").select("*, practices(name)").order("scheduled_date", desc=True)
+        q = supa.table("events").select("*").order("scheduled_date", desc=True)
         if practice_id:
             q = q.eq("practice_id", practice_id)
         if event_type:
@@ -1121,8 +1266,6 @@ def list_events(practice_id=None, event_type=None, month=None, year=None):
             start, end = _ym_to_range(f"{year}-{int(month):02d}")
             q = q.gte("scheduled_date", start).lt("scheduled_date", end)
         rows = q.execute().data or []
-        for row in rows:
-            _pop_embed(row, "practices", "practice_name")
         return rows
     conn = _sqlite()
     query = "SELECT e.*, pr.name as practice_name FROM events e LEFT JOIN practices pr ON e.practice_id=pr.id"
@@ -1530,74 +1673,106 @@ def cleanup_providers_date_like(delete=False):
     return candidates
 
 
-# ── Tasks CRUD ────────────────────────────────────────────────────────────────
+# ── Users ─────────────────────────────────────────────────────────────────────
 
-def get_tasks(assigned_to=None, status=None, practice_id=None):
+def get_user_by_username(username: str):
+    """Return active user dict by username, or None."""
     supa = _supa()
     if supa:
         try:
-            q = supa.table("tasks").select("*, practices(name)").order("due_date")
-            if assigned_to:
-                q = q.eq("assigned_to", assigned_to)
-            if status:
-                q = q.eq("status", status)
-            if practice_id:
-                q = q.eq("practice_id", practice_id)
-            rows = q.execute().data or []
-            for row in rows:
-                _pop_embed(row, "practices", "practice_name")
-            return rows
+            result = (
+                supa.table("users")
+                .select("*")
+                .eq("username", username)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception:
+            return None
+    conn = _sqlite()
+    row = conn.execute(
+        "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_users():
+    """Return all users (all roles, active and inactive)."""
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("users").select("*").order("username").execute()
+            return result.data or []
         except Exception:
             return []
     conn = _sqlite()
-    query = (
-        "SELECT t.*, pr.name as practice_name FROM tasks t "
-        "LEFT JOIN practices pr ON t.practice_id=pr.id WHERE 1=1"
-    )
-    params = []
-    if assigned_to:
-        query += " AND t.assigned_to=?"
-        params.append(assigned_to)
-    if status:
-        query += " AND t.status=?"
-        params.append(status)
-    if practice_id:
-        query += " AND t.practice_id=?"
-        params.append(practice_id)
-    query += " ORDER BY t.due_date ASC NULLS LAST"
-    rows = conn.execute(query, params).fetchall()
+    rows = conn.execute("SELECT * FROM users ORDER BY username").fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def add_task(data: dict) -> int:
+def create_user(data: dict):
+    """Insert a new user row. Returns the new user id."""
     supa = _supa()
     if supa:
-        try:
-            result = supa.table("tasks").insert(data).execute()
-            return result.data[0]["id"]
-        except Exception:
-            return 0
+        result = supa.table("users").insert(data).execute()
+        return result.data[0]["id"] if result.data else None
     conn = _sqlite()
-    cols = ", ".join(data.keys())
-    placeholders = ", ".join(["?"] * len(data))
-    cur = conn.execute(f"INSERT INTO tasks ({cols}) VALUES ({placeholders})", list(data.values()))
+    # Convert Python bools to int for SQLite
+    row = {k: (1 if v is True else 0 if v is False else v) for k, v in data.items()}
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join(["?"] * len(row))
+    cur = conn.execute(
+        f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(row.values())
+    )
     conn.commit()
-    tid = cur.lastrowid
+    uid = cur.lastrowid
     conn.close()
-    return tid
+    return uid
 
 
-def update_task(task_id: int, data: dict):
+def update_user(user_id: int, data: dict):
+    """Update arbitrary fields on a user row."""
     supa = _supa()
     if supa:
-        try:
-            supa.table("tasks").update(data).eq("id", task_id).execute()
-        except Exception:
-            pass
+        supa.table("users").update(data).eq("id", user_id).execute()
         return
     conn = _sqlite()
-    sets = ", ".join(f"{k}=?" for k in data)
-    conn.execute(f"UPDATE tasks SET {sets} WHERE id=?", list(data.values()) + [task_id])
+    row = {k: (1 if v is True else 0 if v is False else v) for k, v in data.items()}
+    sets = ", ".join(f"{k}=?" for k in row)
+    conn.execute(
+        f"UPDATE users SET {sets} WHERE id=?", list(row.values()) + [user_id]
+    )
     conn.commit()
+    conn.close()
+
+
+def update_last_login(user_id: int):
+    """Stamp last_login to now (UTC)."""
+    update_user(user_id, {"last_login": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")})
+
+
+def ensure_default_admin():
+    """Create the default admin user in SQLite if no admin exists.
+    For Supabase, run setup_users.py once instead.
+    """
+    if _supa():
+        return
+    import bcrypt
+    conn = _sqlite()
+    existing = conn.execute(
+        "SELECT id FROM users WHERE role='admin' LIMIT 1"
+    ).fetchone()
+    if not existing:
+        pw_hash = bcrypt.hashpw(b"Admin1234!", bcrypt.gensalt()).decode()
+        conn.execute(
+            "INSERT OR IGNORE INTO users "
+            "(username, password_hash, full_name, role, is_active) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("admin", pw_hash, "Administrator", "admin", 1),
+        )
+        conn.commit()
     conn.close()

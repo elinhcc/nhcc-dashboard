@@ -10,19 +10,23 @@ def show_dashboard():
     try:
         if db_exists():
             from database import get_tasks, get_all_practices, get_contact_log, get_lunches, get_call_attempt_count
-            from datetime import date, timedelta
+            from datetime import date, datetime
 
-            current_user = st.session_state.get("current_user", "") or "Admin"
-            is_admin = current_user == "Admin"
-            hour = __import__("datetime").datetime.now().hour
-            greeting = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
-            name = current_user if not is_admin else "there"
+            user_dict = st.session_state.get("user", {})
+            username  = user_dict.get("username", "")
+            full_name = user_dict.get("full_name", "") or username
+            is_admin  = user_dict.get("role") == "admin"
+            hour      = datetime.now().hour
+            greeting  = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
+            name      = full_name.split()[0] if full_name else "there"
 
-            today_str   = date.today().isoformat()
-            in_3_days   = (date.today() + timedelta(days=3)).isoformat()
+            today_str = date.today().isoformat()
 
-            tasks = get_tasks() if is_admin else get_tasks(assigned_to=current_user)
-            open_tasks = [t for t in tasks if t.get("status") != "done"]
+            if is_admin:
+                open_tasks = get_tasks(is_complete=False)
+            else:
+                open_tasks = get_tasks(is_complete=False, assigned_to=username)
+
             overdue_count = sum(
                 1 for t in open_tasks
                 if t.get("due_date") and t["due_date"] < today_str
@@ -30,7 +34,7 @@ def show_dashboard():
             today_count = sum(1 for t in open_tasks if t.get("due_date") == today_str)
 
             # Count practices in contact queue (attempted but no lunch)
-            practices = get_all_practices(status_filter="Active")
+            practices   = get_all_practices(status_filter="Active")
             queue_count = 0
             for p in practices:
                 contacts   = get_contact_log(practice_id=p["id"], limit=1)
@@ -83,11 +87,20 @@ def show_dashboard():
         c6.metric("Flyers Sent (Month)", stats["flyers_sent_this_month"])
 
         # Cookie visit metrics
-        c7, c8 = st.columns([1, 5])
+        c7, c8, c9, c10, c11 = st.columns([1, 1, 1, 1, 1])
         with c7:
             st.metric("Cookie Visits (Month)", stats.get("cookie_visits_this_month", 0))
         with c8:
             st.metric("Cookie Visits (Total)", stats.get("cookie_visits_total", 0))
+        with c9:
+            tasks_due = stats.get("tasks_due_today", 0)
+            st.metric("Tasks Due Today", tasks_due)
+        with c10:
+            tasks_ovr = stats.get("tasks_overdue", 0)
+            st.metric("Overdue Tasks", tasks_ovr)
+        with c11:
+            needs_attn = stats.get("needs_attention", 0)
+            st.metric("Needs Attention", needs_attn)
 
         st.markdown("---")
 

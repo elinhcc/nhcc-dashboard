@@ -11,11 +11,11 @@ from utils import db_exists
 
 # Color scheme: Blue = Lunches, Green = Cookie Visits, Orange = Reminders
 EVENT_COLORS = {
-    "Lunch":        {"bg": "#007bff", "css": "cal-event-blue"},
-    "Cookie Visit": {"bg": "#28a745", "css": "cal-event-green"},
-    "Reminder":     {"bg": "#FF8C42", "css": "cal-event-orange"},
-    "Call":         {"bg": "#6c757d", "css": "cal-event-gray"},
-    "Other":        {"bg": "#6c757d", "css": "cal-event-gray"},
+    "Lunch":        {"bg": "#0D9488", "css": "cal-event-blue"},
+    "Cookie Visit": {"bg": "#16a34a", "css": "cal-event-green"},
+    "Reminder":     {"bg": "#ea580c", "css": "cal-event-orange"},
+    "Call":         {"bg": "#64748b", "css": "cal-event-gray"},
+    "Other":        {"bg": "#64748b", "css": "cal-event-gray"},
 }
 
 # CSS class used as a "color marker" injected before each event button so that
@@ -35,9 +35,6 @@ _EXCLUDED_TYPES = {"Flyer", "Thank You Letter", "Fax Sent", "Fax", "flyer", "fax
 _CALENDAR_CSS = """
 <style>
 /* ─── NHCC Calendar — Compact, Outlook-style cell buttons ───────── */
-
-/* Scope: all column elements that come AFTER the nhcc-cal-grid-start marker
-   and live inside a 7-column horizontal week block.                        */
 
 /* Remove extra vertical gaps between widgets inside calendar day columns */
 div.element-container:has(.nhcc-cal-grid-start)
@@ -80,39 +77,39 @@ div.element-container:has(.nhcc-cal-grid-start)
 /* ── Event button colors via adjacent marker divs ── */
 div.element-container:has(.nhcc-evt-lunch)
   + div.element-container button {
-    background: #007bff !important;
+    background: #0D9488 !important;
     color: white        !important;
 }
 div.element-container:has(.nhcc-evt-cookie)
   + div.element-container button {
-    background: #28a745 !important;
+    background: #16a34a !important;
     color: white        !important;
 }
 div.element-container:has(.nhcc-evt-reminder)
   + div.element-container button {
-    background: #FF8C42 !important;
+    background: #ea580c !important;
     color: white        !important;
 }
 div.element-container:has(.nhcc-evt-call)
   + div.element-container button,
 div.element-container:has(.nhcc-evt-other)
   + div.element-container button {
-    background: #5a6268 !important;
+    background: #64748b !important;
     color: white        !important;
 }
 
 /* "Add event" (＋) button — subtle, not competing with event buttons */
 div.element-container:has(.nhcc-add-btn-marker)
   + div.element-container button {
-    background: transparent !important;
-    color: #888             !important;
-    border: 1px dashed #555 !important;
-    font-size: 0.7em        !important;
+    background: transparent  !important;
+    color: #94a3b8           !important;
+    border: 1px dashed #CBD5E1 !important;
+    font-size: 0.7em         !important;
 }
 div.element-container:has(.nhcc-add-btn-marker)
   + div.element-container button:hover {
-    background: #2a2a3f !important;
-    color: #ccc         !important;
+    background: #F1F5F9 !important;
+    color: #64748b      !important;
 }
 </style>
 """
@@ -431,9 +428,9 @@ def show_calendar():
 
     # ── Legend ────────────────────────────────────────────────────
     legend_items = [
-        ("Lunches",       "#007bff", "cal-event-blue"),
-        ("Cookie Visits", "#28a745", "cal-event-green"),
-        ("Reminders",     "#FF8C42", "cal-event-orange"),
+        ("Lunches",       "#0D9488", "cal-event-blue"),
+        ("Cookie Visits", "#16a34a", "cal-event-green"),
+        ("Reminders",     "#ea580c", "cal-event-orange"),
     ]
     legend_html = " &nbsp; ".join(
         f'<span class="{css}" style="padding:2px 8px;border-radius:3px;">{name}</span>'
@@ -471,7 +468,7 @@ def show_calendar():
     day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     hdr = st.columns(7)
     for i, n in enumerate(day_names):
-        hdr[i].markdown(f"<div style='text-align:center;font-weight:bold;color:#ccc;'>{n}</div>",
+        hdr[i].markdown(f"<div style='text-align:center;font-weight:bold;color:#64748b;'>{n}</div>",
                         unsafe_allow_html=True)
 
     # ── Calendar grid ─────────────────────────────────────────────
@@ -487,7 +484,7 @@ def show_calendar():
                 if day == 0:
                     # Empty padding cell
                     st.markdown(
-                        '<div style="min-height:70px;background:#111;border:1px solid #222;'
+                        '<div style="min-height:70px;background:#F8FAFC;border:1px solid #E2E8F0;'
                         'border-radius:4px;"></div>',
                         unsafe_allow_html=True,
                     )
@@ -498,13 +495,13 @@ def show_calendar():
                 is_today   = (now.year == year and now.month == month and now.day == day)
 
                 # ── Thin day-header bar ───────────────────────────
-                bg     = "#1e3a5f" if is_today else "#1e1e2f"
-                border = "2px solid #4CAF50" if is_today else "1px solid #333"
+                bg     = "#DBEAFE" if is_today else "#F1F5F9"
+                border = "2px solid #0D9488" if is_today else "1px solid #E2E8F0"
                 today_mark = "📅 " if is_today else ""
                 st.markdown(
                     f'<div style="background:{bg};border:{border};border-radius:4px 4px 0 0;'
                     f'padding:2px 5px;margin-bottom:0;">'
-                    f'<strong style="color:#fff;font-size:0.85em;">{today_mark}{day}</strong>'
+                    f'<strong style="color:#1E293B;font-size:0.85em;">{today_mark}{day}</strong>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -676,7 +673,8 @@ def _gather_events(year: int, month: int) -> dict:
             day = min(r["day_of_month"], last_day)
             add_event(f"{year}-{month:02d}-{day:02d}", "Reminder", r["name"])
 
-    except Exception:
-        pass
+    except Exception as _e:
+        import streamlit as _st
+        _st.warning(f"Could not load calendar events: {_e}")
 
     return events

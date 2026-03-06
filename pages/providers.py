@@ -4,6 +4,15 @@ import pandas as pd
 from datetime import datetime, timedelta
 from utils import db_exists
 
+_SPECIALTIES = [
+    "", "Cardiology", "Dermatology", "Endocrinology", "Gastroenterology",
+    "Hematology/Oncology", "Infectious Disease", "Internal Medicine",
+    "Nephrology", "Neurology", "Obstetrics & Gynecology", "Oncology",
+    "Ophthalmology", "Orthopedics", "Otolaryngology (ENT)", "Palliative Care",
+    "Primary Care", "Psychiatry", "Pulmonology", "Radiation Oncology",
+    "Radiology", "Rheumatology", "Surgery", "Urology", "Other",
+]
+
 
 # ── Callback helpers (execute BEFORE page re-renders) ─────────────────
 
@@ -114,7 +123,7 @@ def _contact_dialog(practice_id):
             st.warning(f"**{call_count} calls** with no lunch scheduled. Consider trying email or in-person visit.")
 
     with st.form("modal_contact_form", clear_on_submit=True):
-        _contact_options = ["Phone Call", "Email Sent", "Fax Sent", "In-Person Visit", "Voicemail Left", "No Answer"]
+        _contact_options = ["Phone Call", "Email Sent", "Fax Sent", "In-Person Visit"]
         _default_type = st.session_state.get("contact_type_default")
         _default_idx = _contact_options.index(_default_type) if _default_type in _contact_options else 0
         # Clear the default so it doesn't persist to the next open
@@ -137,8 +146,13 @@ def _contact_dialog(practice_id):
         is_email = contact_type == "Email Sent"
         is_fax = contact_type == "Fax Sent"
 
+        phone_sub_type = None
         if is_phone:
             st.caption(f"This will be **Call Attempt #{call_count + 1}**")
+            phone_sub_type = st.selectbox(
+                "How did the call go?",
+                ["Spoke with someone", "Left Voicemail", "No Answer"],
+            )
 
         person_contacted = st.text_input("Person Contacted")
 
@@ -158,9 +172,9 @@ def _contact_dialog(practice_id):
                 st.markdown(f'Send via Outlook: <a class="contact-fax" href="mailto:{fax_email}">📠 {fax_email}</a>', unsafe_allow_html=True)
 
         if is_phone:
-            outcome = st.selectbox("Call Outcome", [
-                "Scheduled lunch", "Left voicemail", "No answer",
-                "Busy", "Will call back", "Not interested", "Other",
+            outcome = st.selectbox("Call Outcome (when spoke with someone)", [
+                "Scheduled lunch", "Interested", "Will call back",
+                "Not interested", "Declined", "Other",
             ])
             purpose = st.selectbox("Purpose of Call", [
                 "Schedule lunch", "Confirm lunch", "Follow-up",
@@ -168,7 +182,7 @@ def _contact_dialog(practice_id):
             ])
         elif is_email:
             outcome = st.selectbox("Outcome", [
-                "Sent", "Replied", "Bounced", "No Response", "Other",
+                "Sent", "Replied", "Bounced", "No Response", "Interested", "Other",
             ])
             purpose = st.selectbox("Purpose", [
                 "Schedule lunch", "Confirm lunch", "Follow-up",
@@ -184,8 +198,8 @@ def _contact_dialog(practice_id):
             ])
         else:
             outcome = st.selectbox("Outcome", [
-                "Successful", "No Answer", "Left Message",
-                "Follow-up Needed", "Other",
+                "Successful", "Interested", "Follow-up Needed",
+                "Not interested", "Other",
             ])
             purpose = st.selectbox("Purpose", [
                 "Schedule lunch", "Confirm lunch", "Follow-up",
@@ -202,7 +216,15 @@ def _contact_dialog(practice_id):
             cancelled = st.form_submit_button("Cancel", use_container_width=True)
 
         if submitted:
+            from database import add_task, _add_business_days
             contact_datetime = datetime.combine(contact_date, contact_time).isoformat()
+
+            # Resolve effective outcome for phone calls
+            if is_phone and phone_sub_type in ("Left Voicemail", "No Answer"):
+                effective_outcome = phone_sub_type
+            else:
+                effective_outcome = outcome
+
             log_data = {
                 "practice_id": practice_id,
                 "contact_type": contact_type,
@@ -210,7 +232,7 @@ def _contact_dialog(practice_id):
                 "contact_method": "phone" if is_phone else ("email" if is_email else ("fax" if is_fax else "in-person")),
                 "team_member": team_member,
                 "person_contacted": person_contacted,
-                "outcome": outcome,
+                "outcome": effective_outcome,
                 "purpose": purpose,
                 "notes": notes,
             }
@@ -221,7 +243,56 @@ def _contact_dialog(practice_id):
             if is_fax and fax_document:
                 log_data["fax_document"] = fax_document
             add_contact_log(log_data)
-            attempt_label = f" (Attempt #{call_count + 1})" if is_phone else ""
+
+            # Auto-create follow-up tasks based on outcome
+            _today = contact_date
+            try:
+                if is_phone and phone_sub_type == "Left Voicemail":
+                    _due = _add_business_days(_today, 2).isoformat()
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type": "Follow-up Call",
+                        "description": f"Follow-up call to {practice['name']} (attempt #{call_count + 2})",
+                        "due_date": _due,
+                        "assigned_to": team_member,
+                    })
+                elif is_phone and phone_sub_type == "No Answer":
+                    _due = _add_business_days(_today, 1).isoformat()
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type": "Follow-up Call",
+                        "description": f"Follow-up call to {practice['name']} — no answer (attempt #{call_count + 2})",
+                        "due_date": _due,
+                        "assigned_to": team_member,
+                    })
+                elif is_phone and phone_sub_type == "Spoke with someone" and outcome == "Scheduled lunch":
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type": "Catering",
+                        "description": f"Order catering for {practice['name']} lunch",
+                        "due_date": _add_business_days(_today, 3).isoformat(),
+                        "assigned_to": team_member,
+                    })
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type": "Confirmation Email",
+                        "description": f"Send confirmation email to {practice['name']}",
+                        "due_date": _add_business_days(_today, 1).isoformat(),
+                        "assigned_to": team_member,
+                    })
+                elif effective_outcome in ("Interested", "Will call back", "Follow-up Needed"):
+                    _due = _add_business_days(_today, 3).isoformat()
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type": "Follow-up",
+                        "description": f"Follow up with {practice['name']} — {effective_outcome}",
+                        "due_date": _due,
+                        "assigned_to": team_member,
+                    })
+            except Exception:
+                pass  # Don't block contact log on task creation failure
+
+            attempt_label = f" (Attempt #{call_count + 1}, {phone_sub_type})" if is_phone else ""
             st.session_state.active_contact_form = None
             st.session_state.show_contact_success = f"{contact_type} logged for {practice['name']}{attempt_label}"
             st.rerun()
@@ -574,7 +645,7 @@ def show_providers():
         get_contact_log, add_contact_log, get_lunches, add_lunch, update_lunch,
         add_call_attempt, get_call_attempts, get_cookie_visits, add_cookie_visit,
         get_thank_yous, add_thank_you, update_thank_you,
-        get_call_attempt_count, get_last_contact,
+        get_call_attempt_count, get_last_contact, get_tasks,
     )
     from database import create_event, update_event
     from utils import (
@@ -652,6 +723,13 @@ def show_providers():
                 with detail_col2:
                     st.markdown(f"**Status:** {practice.get('status', 'Active')}")
                     st.markdown(f"**Contact Person:** {practice.get('contact_person', 'N/A')}")
+                    if practice.get("specialty"):
+                        st.markdown(f"**Specialty:** {practice['specialty']}")
+                    if practice.get("website"):
+                        website_url = practice["website"]
+                        if not website_url.startswith(("http://", "https://")):
+                            website_url = "https://" + website_url
+                        st.markdown(f'**Website:** <a class="contact-website" href="{website_url}" target="_blank">{practice["website"]}</a>', unsafe_allow_html=True)
                     st.markdown(f"**Notes:** {practice.get('notes', '')[:200]}")
 
                 # Last contact summary
@@ -670,9 +748,24 @@ def show_providers():
                     if call_count > 0:
                         scheduled = any(c.get("outcome") == "Scheduled lunch" for c in get_contact_log(practice_id=practice["id"], limit=50))
                         if not scheduled:
-                            st.caption(f"**Pending:** Schedule lunch ({call_count} call{'s' if call_count != 1 else ''} made)")
+                            if call_count >= 3:
+                                st.warning(f"**Needs Attention:** {call_count} calls with no lunch scheduled")
+                            else:
+                                st.caption(f"**Pending:** Schedule lunch ({call_count} call{'s' if call_count != 1 else ''} made)")
                 else:
                     st.caption("**Last Contact:** None — no contact logged yet")
+
+                # Pending tasks
+                pending_tasks = get_tasks(practice_id=practice["id"], is_complete=False)
+                if pending_tasks:
+                    today_iso = datetime.now().date().isoformat()
+                    task_lines = []
+                    for t in pending_tasks[:4]:
+                        due = (t.get("due_date") or "")[:10]
+                        overdue = due and due < today_iso
+                        prefix = "🔴 " if overdue else ""
+                        task_lines.append(f"{prefix}{t.get('task_type', '')}: due {due or 'TBD'}")
+                    st.caption(f"**Open Tasks ({len(pending_tasks)}):** " + " | ".join(task_lines))
 
                 # Providers list with management controls
                 st.markdown("**Providers:**")
@@ -874,6 +967,8 @@ def show_providers():
             contact_person = st.text_input("Contact Person")
             email = st.text_input("Email")
             website = st.text_input("Website")
+            specialty_choice = st.selectbox("Specialty", _SPECIALTIES)
+            specialty_other = st.text_input("Specify Specialty (if Other)")
             notes = st.text_area("Notes")
             new_providers = st.text_area("Providers (one per line)")
 
@@ -889,6 +984,7 @@ def show_providers():
                     if zip_match:
                         zip_code = zip_match.group(1)
 
+                    specialty = specialty_other.strip() if specialty_choice == "Other" else specialty_choice
                     practice_id = add_practice({
                         "name": name,
                         "address": address,
@@ -900,6 +996,7 @@ def show_providers():
                         "contact_person": contact_person,
                         "email": email,
                         "website": website,
+                        "specialty": specialty,
                         "notes": notes,
                     })
 
@@ -927,6 +1024,10 @@ def _show_edit_form(practice):
         contact_person = st.text_input("Contact Person", value=practice.get("contact_person", ""))
         email = st.text_input("Email", value=practice.get("email", ""))
         website = st.text_input("Website", value=practice.get("website", ""))
+        current_specialty = practice.get("specialty", "") or ""
+        spec_index = _SPECIALTIES.index(current_specialty) if current_specialty in _SPECIALTIES else 0
+        specialty_choice = st.selectbox("Specialty", _SPECIALTIES, index=spec_index)
+        specialty_other = st.text_input("Specify Specialty (if Other)", value=current_specialty if current_specialty not in _SPECIALTIES else "")
         notes = st.text_area("Notes", value=practice.get("notes", ""))
 
         col1, col2 = st.columns(2)
@@ -940,10 +1041,11 @@ def _show_edit_form(practice):
                 if zip_match:
                     zip_code = zip_match.group(1)
 
+                specialty = specialty_other.strip() if specialty_choice == "Other" else specialty_choice
                 update_practice(practice["id"], {
                     "name": name, "address": address, "phone": phone, "fax": fax,
                     "fax_vonage_email": vonage_email, "contact_person": contact_person,
-                    "email": email, "website": website, "notes": notes,
+                    "email": email, "website": website, "specialty": specialty, "notes": notes,
                     "zip_code": zip_code, "location_category": categorize_location(address),
                 })
                 st.session_state[f"editing_{practice['id']}"] = False
