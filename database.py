@@ -1690,7 +1690,7 @@ def get_user_by_username(username: str):
             )
             return result.data[0] if result.data else None
         except Exception:
-            return None
+            pass  # Fall through to SQLite if Supabase query fails
     conn = _sqlite()
     row = conn.execute(
         "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
@@ -1756,12 +1756,24 @@ def update_last_login(user_id: int):
 
 
 def ensure_default_admin():
-    """Create the default admin user in SQLite if no admin exists.
-    For Supabase, run setup_users.py once instead.
-    """
-    if _supa():
-        return
+    """Create the default admin user if no admin exists (SQLite and Supabase)."""
     import bcrypt
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("users").select("id").eq("role", "admin").limit(1).execute()
+            if not result.data:
+                pw_hash = bcrypt.hashpw(b"Admin1234!", bcrypt.gensalt()).decode()
+                supa.table("users").upsert({
+                    "username": "admin",
+                    "password_hash": pw_hash,
+                    "full_name": "Administrator",
+                    "role": "admin",
+                    "is_active": True,
+                }, on_conflict="username").execute()
+        except Exception:
+            pass
+        return
     conn = _sqlite()
     existing = conn.execute(
         "SELECT id FROM users WHERE role='admin' LIMIT 1"
