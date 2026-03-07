@@ -36,6 +36,9 @@ st.session_state.setdefault("active_event_date", None)
 st.session_state.setdefault("active_event_id", None)
 st.session_state.setdefault("active_fax_form", None)       # practice_id or None
 st.session_state.setdefault("contact_type_default", None)   # e.g. "Email Sent"
+st.session_state.setdefault("outreach_lunch_info",   None)  # {pid, name, record} for lunch dialog
+st.session_state.setdefault("outreach_cookie_info",  None)  # {pid, name, record} for cookie dialog
+st.session_state.setdefault("outreach_history_info", None)  # {pid, name} for history dialog
 
 # Custom CSS — light clinical theme
 st.markdown("""
@@ -315,6 +318,7 @@ def main():
             "🏢 Providers",
             "📋 Action Items",
             "📅 Calendar",
+            "🤝 Outreach",
             "📨 Flyer Campaigns",
             "📈 Analytics",
         ]
@@ -325,6 +329,8 @@ def main():
         _default_idx = 0
         if _nav_override == "My Daily Work":
             _default_idx = 2  # "📋 Action Items"
+        elif _nav_override in nav_options:
+            _default_idx = nav_options.index(_nav_override)
         page = st.radio(
             "Navigation",
             nav_options,
@@ -364,6 +370,9 @@ def main():
     elif page == "📅 Calendar":
         from pages.calendar_view import show_calendar
         show_calendar()
+    elif page == "🤝 Outreach":
+        from pages.outreach_management import show_outreach_management
+        show_outreach_management()
     elif page == "📨 Flyer Campaigns":
         from pages.flyer_campaigns import show_flyer_campaigns
         show_flyer_campaigns()

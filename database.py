@@ -283,6 +283,48 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         last_login DATETIME
     );
+    CREATE TABLE IF NOT EXISTS outreach_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        practice_id INTEGER NOT NULL UNIQUE,
+        lunch_status TEXT DEFAULT 'Not Started',
+        lunch_status_date DATE,
+        lunch_note TEXT,
+        last_lunch_date DATE,
+        next_lunch_due DATE,
+        lunch_amount_spent REAL,
+        cookie_status TEXT DEFAULT 'Not Started',
+        cookie_status_date DATE,
+        cookie_note TEXT,
+        last_cookie_date DATE,
+        next_cookie_due DATE,
+        cookie_amount_spent REAL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
+    CREATE TABLE IF NOT EXISTS outreach_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        practice_id INTEGER NOT NULL,
+        outreach_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        status_date DATE,
+        note TEXT,
+        amount_spent REAL,
+        updated_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
+    CREATE TABLE IF NOT EXISTS provider_referrals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        practice_id INTEGER NOT NULL,
+        referral_date DATE NOT NULL,
+        patient_initials TEXT,
+        notes TEXT,
+        logged_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (provider_id) REFERENCES providers(id),
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
     """)
     _migrate_column(c, "contact_log", "purpose", "TEXT")
     _migrate_column(c, "contact_log", "call_attempt_number", "INTEGER")
@@ -293,6 +335,16 @@ def init_db():
     _migrate_column(c, "cookie_visits", "next_visit_date", "DATETIME")
     _migrate_column(c, "practices", "specialty", "TEXT")
     _migrate_column(c, "tasks", "notes", "TEXT")
+    _migrate_column(c, "providers", "is_new_referrer", "INTEGER DEFAULT 0")
+    _migrate_column(c, "providers", "specialty", "TEXT")
+    _migrate_column(c, "providers", "first_referral_date", "DATE")
+    _migrate_column(c, "providers", "last_referral_date", "DATE")
+    _migrate_column(c, "providers", "total_referrals", "INTEGER DEFAULT 0")
+    _migrate_column(c, "providers", "welcome_package_sent", "INTEGER DEFAULT 0")
+    _migrate_column(c, "providers", "welcome_package_sent_date", "DATE")
+    _migrate_column(c, "providers", "thank_you_sent", "INTEGER DEFAULT 0")
+    _migrate_column(c, "providers", "intro_folder_sent", "INTEGER DEFAULT 0")
+    _migrate_column(c, "providers", "business_card_sent", "INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -1291,6 +1343,332 @@ def list_events(practice_id=None, event_type=None, month=None, year=None):
 
 def list_events_by_month(year: int, month: int):
     return list_events(month=month, year=year)
+
+
+# ── Outreach Records ──────────────────────────────────────────────────────────
+
+def get_outreach_record(practice_id: int):
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("outreach_records").select("*").eq("practice_id", practice_id).limit(1).execute()
+            return result.data[0] if result.data else None
+        except Exception:
+            return None
+    conn = _sqlite()
+    try:
+        row = conn.execute("SELECT * FROM outreach_records WHERE practice_id=?", (practice_id,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception:
+        conn.close()
+        return None
+
+
+def get_all_outreach_records():
+    """Return dict keyed by practice_id."""
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("outreach_records").select("*").execute()
+            return {r["practice_id"]: r for r in (result.data or [])}
+        except Exception:
+            return {}
+    conn = _sqlite()
+    try:
+        rows = conn.execute("SELECT * FROM outreach_records").fetchall()
+        conn.close()
+        return {r["practice_id"]: dict(r) for r in rows}
+    except Exception:
+        conn.close()
+        return {}
+
+
+def upsert_outreach_record(practice_id: int, data: dict):
+    data = dict(data)
+    data["updated_at"] = datetime.now().isoformat()
+    supa = _supa()
+    if supa:
+        try:
+            payload = {"practice_id": practice_id, **data}
+            supa.table("outreach_records").upsert(payload, on_conflict="practice_id").execute()
+        except Exception:
+            pass
+        return
+    conn = _sqlite()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM outreach_records WHERE practice_id=?", (practice_id,)
+        ).fetchone()
+        if existing:
+            sets = ", ".join(f"{k}=?" for k in data)
+            conn.execute(
+                f"UPDATE outreach_records SET {sets} WHERE practice_id=?",
+                list(data.values()) + [practice_id],
+            )
+        else:
+            full = {"practice_id": practice_id, **data}
+            cols = ", ".join(full.keys())
+            placeholders = ", ".join(["?"] * len(full))
+            conn.execute(
+                f"INSERT INTO outreach_records ({cols}) VALUES ({placeholders})",
+                list(full.values()),
+            )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def add_outreach_history(data: dict) -> int:
+    data = dict(data)
+    data.setdefault("created_at", datetime.now().isoformat())
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("outreach_history").insert(data).execute()
+            return result.data[0]["id"]
+        except Exception:
+            return 0
+    conn = _sqlite()
+    try:
+        cols = ", ".join(data.keys())
+        placeholders = ", ".join(["?"] * len(data))
+        cur = conn.execute(
+            f"INSERT INTO outreach_history ({cols}) VALUES ({placeholders})",
+            list(data.values()),
+        )
+        conn.commit()
+        hid = cur.lastrowid
+    except Exception:
+        hid = 0
+    finally:
+        conn.close()
+    return hid
+
+
+def get_outreach_history(practice_id: int, outreach_type=None, limit=30):
+    supa = _supa()
+    if supa:
+        try:
+            q = (supa.table("outreach_history").select("*")
+                 .eq("practice_id", practice_id)
+                 .order("created_at", desc=True).limit(limit))
+            if outreach_type:
+                q = q.eq("outreach_type", outreach_type)
+            return q.execute().data or []
+        except Exception:
+            return []
+    conn = _sqlite()
+    try:
+        if outreach_type:
+            rows = conn.execute(
+                "SELECT * FROM outreach_history WHERE practice_id=? AND outreach_type=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (practice_id, outreach_type, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM outreach_history WHERE practice_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (practice_id, limit),
+            ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        conn.close()
+        return []
+
+
+def get_practices_with_new_referrers():
+    """Return set of practice_ids that have at least one provider with is_new_referrer=1."""
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("providers").select("practice_id").eq("is_new_referrer", True).execute()
+            return {r["practice_id"] for r in (result.data or [])}
+        except Exception:
+            return set()
+    conn = _sqlite()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT practice_id FROM providers WHERE is_new_referrer=1"
+        ).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        conn.close()
+        return set()
+
+
+def set_provider_new_referrer(provider_id: int, value: bool):
+    supa = _supa()
+    if supa:
+        try:
+            supa.table("providers").update({"is_new_referrer": value}).eq("id", provider_id).execute()
+        except Exception:
+            pass
+        return
+    conn = _sqlite()
+    try:
+        conn.execute("UPDATE providers SET is_new_referrer=? WHERE id=?", (1 if value else 0, provider_id))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+# ── Provider Referrals ────────────────────────────────────────────────────────
+
+def log_provider_referral(data: dict) -> int:
+    """Insert a referral record and refresh the provider's summary stats."""
+    data = dict(data)
+    data.setdefault("created_at", datetime.now().isoformat())
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("provider_referrals").insert(data).execute()
+            rid = result.data[0]["id"]
+        except Exception:
+            rid = 0
+    else:
+        conn = _sqlite()
+        try:
+            cols = ", ".join(data.keys())
+            placeholders = ", ".join(["?"] * len(data))
+            cur = conn.execute(
+                f"INSERT INTO provider_referrals ({cols}) VALUES ({placeholders})",
+                list(data.values()),
+            )
+            conn.commit()
+            rid = cur.lastrowid
+        except Exception:
+            rid = 0
+        finally:
+            conn.close()
+
+    provider_id = data.get("provider_id")
+    if provider_id:
+        _refresh_provider_referral_stats(provider_id)
+    return rid
+
+
+def _refresh_provider_referral_stats(provider_id: int):
+    """Recompute first/last referral date, total, and is_new_referrer on the providers row."""
+    refs = get_provider_referrals(provider_id, limit=5000)
+    if not refs:
+        return
+    dates = sorted(
+        [r["referral_date"] for r in refs if r.get("referral_date")],
+    )
+    total = len(refs)
+    first_date = dates[0] if dates else None
+    last_date  = dates[-1] if dates else None
+
+    is_new = False
+    if first_date:
+        try:
+            from datetime import date as _d
+            fd = _d.fromisoformat(str(first_date)[:10])
+            is_new = (_d.today() - fd).days <= 30 and total <= 3
+        except Exception:
+            pass
+
+    update_data = {
+        "total_referrals":    total,
+        "first_referral_date": first_date,
+        "last_referral_date":  last_date,
+        "is_new_referrer":     1 if is_new else 0,
+    }
+    supa = _supa()
+    if supa:
+        try:
+            d = dict(update_data)
+            d["is_new_referrer"] = bool(d["is_new_referrer"])
+            supa.table("providers").update(d).eq("id", provider_id).execute()
+        except Exception:
+            pass
+        return
+    conn = _sqlite()
+    try:
+        sets = ", ".join(f"{k}=?" for k in update_data)
+        conn.execute(
+            f"UPDATE providers SET {sets} WHERE id=?",
+            list(update_data.values()) + [provider_id],
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def get_provider_referrals(provider_id: int, limit: int = 50):
+    supa = _supa()
+    if supa:
+        try:
+            result = (
+                supa.table("provider_referrals").select("*")
+                .eq("provider_id", provider_id)
+                .order("referral_date", desc=True).limit(limit).execute()
+            )
+            return result.data or []
+        except Exception:
+            return []
+    conn = _sqlite()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM provider_referrals WHERE provider_id=? ORDER BY referral_date DESC LIMIT ?",
+            (provider_id, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        conn.close()
+        return []
+
+
+def get_provider_referral_stats(provider_id: int) -> dict:
+    """Return {total, last_30, last_90, prior_90, last_180} for a provider."""
+    today = date.today()
+    d30   = (today - __import__("datetime").timedelta(days=30)).isoformat()
+    d90   = (today - __import__("datetime").timedelta(days=90)).isoformat()
+    d180  = (today - __import__("datetime").timedelta(days=180)).isoformat()
+    pr_start = d180
+    pr_end   = d90
+
+    supa = _supa()
+    if supa:
+        try:
+            rows = (
+                supa.table("provider_referrals").select("referral_date")
+                .eq("provider_id", provider_id).execute().data or []
+            )
+            dates = [r["referral_date"] for r in rows if r.get("referral_date")]
+            return {
+                "total":    len(dates),
+                "last_30":  sum(1 for d in dates if d >= d30),
+                "last_90":  sum(1 for d in dates if d >= d90),
+                "prior_90": sum(1 for d in dates if pr_start <= d < pr_end),
+                "last_180": sum(1 for d in dates if d >= d180),
+            }
+        except Exception:
+            return {"total": 0, "last_30": 0, "last_90": 0, "prior_90": 0, "last_180": 0}
+
+    conn = _sqlite()
+    try:
+        total    = conn.execute("SELECT COUNT(*) FROM provider_referrals WHERE provider_id=?",   (provider_id,)).fetchone()[0]
+        last_30  = conn.execute("SELECT COUNT(*) FROM provider_referrals WHERE provider_id=? AND referral_date>=?", (provider_id, d30)).fetchone()[0]
+        last_90  = conn.execute("SELECT COUNT(*) FROM provider_referrals WHERE provider_id=? AND referral_date>=?", (provider_id, d90)).fetchone()[0]
+        prior_90 = conn.execute("SELECT COUNT(*) FROM provider_referrals WHERE provider_id=? AND referral_date>=? AND referral_date<?", (provider_id, pr_start, pr_end)).fetchone()[0]
+        last_180 = conn.execute("SELECT COUNT(*) FROM provider_referrals WHERE provider_id=? AND referral_date>=?", (provider_id, d180)).fetchone()[0]
+        conn.close()
+        return {"total": total, "last_30": last_30, "last_90": last_90, "prior_90": prior_90, "last_180": last_180}
+    except Exception:
+        conn.close()
+        return {"total": 0, "last_30": 0, "last_90": 0, "prior_90": 0, "last_180": 0}
 
 
 # ── Vonage / Fax ──────────────────────────────────────────────────────────────

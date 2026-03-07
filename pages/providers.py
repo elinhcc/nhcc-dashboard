@@ -625,6 +625,267 @@ def render_fax_modal():
         _fax_dialog(practice_id)
 
 
+# ── Referral Intelligence Helpers ─────────────────────────────────────
+
+_STAGE_COLORS = {
+    "New Referrer":    "#16a34a",
+    "Active Referrer": "#0D9488",
+    "Cooling Down":    "#d97706",
+    "Inactive":        "#ef4444",
+    "No Referrals":    "#94a3b8",
+}
+
+
+def _provider_stage(first_date, last_date, total, d30, d90, d180):
+    if not total:
+        return "No Referrals"
+    if not last_date:
+        return "No Referrals"
+    last_d  = str(last_date)[:10]
+    first_d = str(first_date)[:10] if first_date else last_d
+    if first_d >= d30 and total <= 3:
+        return "New Referrer"
+    if last_d >= d90:
+        return "Active Referrer"
+    if last_d >= d180:
+        return "Cooling Down"
+    return "Inactive"
+
+
+def _next_outreach_rec(stage, is_new_referrer, welcome_sent):
+    if is_new_referrer and not welcome_sent:
+        return "Send Welcome Package"
+    if stage == "New Referrer":
+        return "Call Office"
+    if stage == "Active Referrer":
+        return "Send Thank You / Schedule Lunch"
+    if stage == "Cooling Down":
+        return "Reconnect"
+    if stage == "Inactive":
+        return "Reconnect"
+    return "Monitor"
+
+
+def _stage_badge(stage):
+    color = _STAGE_COLORS.get(stage, "#94a3b8")
+    return (
+        f'<span style="background:{color};color:#fff;padding:2px 8px;'
+        f'border-radius:4px;font-size:0.78em;font-weight:600;">{stage}</span>'
+    )
+
+
+# ── Log Referral Dialog ───────────────────────────────────────────────
+
+@st.dialog("Log Referral", width="large")
+def _log_referral_dialog(provider_id):
+    from database import get_provider, get_practice, log_provider_referral, add_task, _add_business_days
+    from datetime import date as _date
+
+    prov = get_provider(provider_id)
+    if not prov:
+        st.error("Provider not found.")
+        return
+
+    practice_id   = prov.get("practice_id")
+    practice      = get_practice(practice_id) if practice_id else None
+    pname         = practice["name"] if practice else "Unknown Practice"
+    is_first      = not prov.get("total_referrals") or prov["total_referrals"] == 0
+
+    st.markdown(f"**Provider:** {prov['name']}  \n**Practice:** {pname}")
+    if is_first:
+        st.success("This appears to be a first referral — welcome package workflow will trigger automatically.")
+
+    today = _date.today()
+    referral_date = st.date_input("Referral Date", value=today)
+    patient_initials = st.text_input("Patient Initials (optional)", placeholder="e.g. J.D.")
+    notes = st.text_input("Notes", placeholder="Optional details")
+
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Save Referral", type="primary", use_container_width=True):
+            user_dict = st.session_state.get("user", {})
+            username  = user_dict.get("username", "")
+
+            log_provider_referral({
+                "provider_id":       provider_id,
+                "practice_id":       practice_id or 0,
+                "referral_date":     referral_date.isoformat(),
+                "patient_initials":  patient_initials.strip(),
+                "notes":             notes.strip(),
+                "logged_by":         username,
+            })
+
+            # First-referral automation
+            if is_first and practice_id:
+                try:
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type":   "Send Welcome Package",
+                        "description": f"Send welcome package to {prov['name']} at {pname}",
+                        "due_date":    _add_business_days(today, 1).isoformat(),
+                        "assigned_to": username,
+                        "is_complete": 0,
+                        "notes":       "Auto-created: first referral from this provider",
+                        "created_at":  datetime.now().isoformat(),
+                    })
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type":   "Call Office Introduction",
+                        "description": f"Call office re: new referrer {prov['name']}",
+                        "due_date":    _add_business_days(today, 2).isoformat(),
+                        "assigned_to": username,
+                        "is_complete": 0,
+                        "notes":       "Auto-created: first referral from this provider",
+                        "created_at":  datetime.now().isoformat(),
+                    })
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type":   "Schedule Lunch",
+                        "description": f"Schedule lunch to welcome new referrer {prov['name']} at {pname}",
+                        "due_date":    _add_business_days(today, 14).isoformat(),
+                        "assigned_to": username,
+                        "is_complete": 0,
+                        "notes":       "Auto-created: first referral from this provider",
+                        "created_at":  datetime.now().isoformat(),
+                    })
+                except Exception:
+                    pass
+
+            st.session_state.prov_log_referral_id = None
+            st.success("Referral logged!")
+            st.rerun()
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.prov_log_referral_id = None
+            st.rerun()
+
+
+# ── Provider Detail Dialog ────────────────────────────────────────────
+
+@st.dialog("Provider Detail", width="large")
+def _provider_detail_dialog(provider_id):
+    from database import (
+        get_provider, get_practice, get_provider_referrals,
+        get_provider_referral_stats, get_last_contact,
+        get_outreach_record, update_provider,
+    )
+    from datetime import date as _date, timedelta as _td
+
+    prov = get_provider(provider_id)
+    if not prov:
+        st.error("Provider not found.")
+        return
+
+    practice_id   = prov.get("practice_id")
+    practice      = get_practice(practice_id) if practice_id else None
+    pname         = practice["name"] if practice else "—"
+    today         = _date.today()
+    d30           = (today - _td(days=30)).isoformat()
+    d90           = (today - _td(days=90)).isoformat()
+    d180          = (today - _td(days=180)).isoformat()
+
+    stats         = get_provider_referral_stats(provider_id)
+    stage         = _provider_stage(
+        prov.get("first_referral_date"), prov.get("last_referral_date"),
+        stats["total"] or prov.get("total_referrals") or 0, d30, d90, d180,
+    )
+    is_new        = bool(prov.get("is_new_referrer"))
+    welcome_sent  = bool(prov.get("welcome_package_sent"))
+    last_contact  = get_last_contact(practice_id) if practice_id else None
+    outreach_rec  = get_outreach_record(practice_id) if practice_id else None
+
+    # Header
+    st.markdown(
+        f"### {prov['name']}\n"
+        f"**Practice:** {pname}  |  **Status:** {prov.get('status','Active')}"
+    )
+    if prov.get("specialty"):
+        st.caption(f"Specialty: {prov['specialty']}")
+    st.markdown(
+        _stage_badge(stage) +
+        (" &nbsp;" + '<span style="background:#dc2626;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.78em;font-weight:600;">NEW REFERRER</span>' if is_new else ""),
+        unsafe_allow_html=True,
+    )
+    st.markdown("---")
+
+    # Referral intelligence
+    col_ref, col_out = st.columns(2)
+    with col_ref:
+        st.markdown("**Referral Intelligence**")
+        st.caption(f"First Referral: {(prov.get('first_referral_date') or 'None')[:10]}")
+        st.caption(f"Last Referral:  {(prov.get('last_referral_date')  or 'None')[:10]}")
+        st.caption(f"Total Referrals: {stats['total']}")
+        st.caption(f"Last 30 days: {stats['last_30']}  |  Last 90 days: {stats['last_90']}")
+        trend_label = ("Up ↑" if stats["last_90"] > stats["prior_90"]
+                       else "Down ↓" if stats["last_90"] < stats["prior_90"] else "Stable →")
+        st.caption(f"Trend: {trend_label}")
+
+    with col_out:
+        st.markdown("**Outreach Connection**")
+        lc_date = (last_contact.get("contact_date") or "None")[:10] if last_contact else "None"
+        st.caption(f"Last Office Contact: {lc_date}")
+        if outreach_rec:
+            st.caption(f"Lunch Status: {outreach_rec.get('lunch_status') or 'Not Started'}")
+            st.caption(f"Cookie Status: {outreach_rec.get('cookie_status') or 'Not Started'}")
+        next_rec = _next_outreach_rec(stage, is_new, welcome_sent)
+        st.markdown(f"**Next Recommended:** {next_rec}")
+
+    # Welcome package checklist
+    st.markdown("---")
+    st.markdown("**Welcome Package Checklist**")
+    wc1, wc2 = st.columns(2)
+    with wc1:
+        new_wp    = st.checkbox("Welcome Package Sent", value=welcome_sent, key=f"wp_{provider_id}")
+        new_ty    = st.checkbox("Thank You Letter Sent",value=bool(prov.get("thank_you_sent")), key=f"ty_{provider_id}")
+    with wc2:
+        new_if    = st.checkbox("Intro Folder Sent",    value=bool(prov.get("intro_folder_sent")), key=f"if_{provider_id}")
+        new_bc    = st.checkbox("Business Card Sent",   value=bool(prov.get("business_card_sent")), key=f"bc_{provider_id}")
+
+    wp_date = None
+    if new_wp and not welcome_sent:
+        wp_date = st.date_input("Welcome Package Date", value=today, key=f"wpd_{provider_id}")
+
+    # Specialist / new referrer flag
+    st.markdown("---")
+    new_is_new = st.checkbox("Mark as New Referrer (manual override)", value=is_new, key=f"nr_{provider_id}")
+    new_specialty = st.text_input("Specialty (provider-level)", value=prov.get("specialty") or "", key=f"spec_{provider_id}")
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        if st.button("Save Changes", type="primary", use_container_width=True, key=f"det_save_{provider_id}"):
+            update_data = {
+                "welcome_package_sent":  1 if new_wp else 0,
+                "thank_you_sent":        1 if new_ty else 0,
+                "intro_folder_sent":     1 if new_if else 0,
+                "business_card_sent":    1 if new_bc else 0,
+                "is_new_referrer":       1 if new_is_new else 0,
+                "specialty":             new_specialty.strip(),
+            }
+            if new_wp and not welcome_sent and wp_date:
+                update_data["welcome_package_sent_date"] = wp_date.isoformat()
+            update_provider(provider_id, update_data)
+            st.session_state.prov_detail_id = None
+            st.success("Provider updated!")
+            st.rerun()
+    with sc2:
+        if st.button("Close", use_container_width=True, key=f"det_close_{provider_id}"):
+            st.session_state.prov_detail_id = None
+            st.rerun()
+
+    # Recent referral history
+    refs = get_provider_referrals(provider_id, limit=15)
+    if refs:
+        st.markdown("---")
+        st.markdown("**Recent Referral Activity**")
+        for ref in refs:
+            ref_date = str(ref.get("referral_date", ""))[:10]
+            initials = ref.get("patient_initials") or "—"
+            note     = ref.get("notes") or ""
+            by       = ref.get("logged_by") or ""
+            st.caption(f"📅 {ref_date}  |  Patient: {initials}  |  {note}  |  By: {by}")
+
+
 # ── Main page ─────────────────────────────────────────────────────────
 
 def show_providers():
@@ -673,7 +934,7 @@ def show_providers():
             st.session_state.last_ics_name = None
         st.session_state.show_lunch_success = None
 
-    tab_practices, tab_providers, tab_add = st.tabs(["Practices", "Individual Providers", "Add New"])
+    tab_practices, tab_providers, tab_add = st.tabs(["Practices", "Referral Intelligence", "Add New"])
 
     # ── Practices Tab ──────────────────────────────────────────────────
     with tab_practices:
@@ -928,33 +1189,266 @@ def show_providers():
                         purpose_str = f" ({purpose})" if purpose else ""
                         st.caption(f"📅 {date_str} | {ctype}{attempt_str} | {outcome}{purpose_str} | {c.get('notes', '')[:60]}")
 
-    # ── Individual Providers Tab ───────────────────────────────────────
+    # ── Referral Intelligence Tab ─────────────────────────────────────
     with tab_providers:
+        from database import (
+            get_provider_referral_stats, get_provider_referrals,
+            get_all_outreach_records,
+        )
+
+        st.session_state.setdefault("prov_log_referral_id", None)
+        st.session_state.setdefault("prov_detail_id",       None)
+
         all_providers = get_all_providers()
-        prov_search = st.text_input("🔍 Search providers by name", key="prov_search")
-        if prov_search:
-            all_providers = [p for p in all_providers if prov_search.lower() in p["name"].lower()]
+        outreach_map  = get_all_outreach_records()
 
-        if all_providers:
-            df = pd.DataFrame(all_providers)[["name", "practice_name", "status"]]
-            df.columns = ["Provider Name", "Practice", "Status"]
-            st.dataframe(df, use_container_width=True, hide_index=True)
+        today    = datetime.now().date()
+        d30_str  = (today - timedelta(days=30)).isoformat()
+        d90_str  = (today - timedelta(days=90)).isoformat()
+        d180_str = (today - timedelta(days=180)).isoformat()
 
-            # Move provider
-            st.markdown("### Move Provider to New Practice")
-            prov_options = {f"{p['name']} ({p.get('practice_name', 'N/A')})": p["id"] for p in all_providers}
-            selected_prov = st.selectbox("Select Provider", options=list(prov_options.keys()))
-            all_practices = get_all_practices()
-            practice_options = {p["name"]: p["id"] for p in all_practices}
-            new_practice = st.selectbox("Move to Practice", options=list(practice_options.keys()))
-            move_notes = st.text_input("Move notes")
-            if st.button("Move Provider"):
-                if selected_prov and new_practice:
-                    move_provider(prov_options[selected_prov], practice_options[new_practice], move_notes)
-                    st.success(f"Provider moved to {new_practice}")
-                    st.rerun()
+        # Quick filter bar
+        quick_filter = st.radio(
+            "Quick View",
+            ["All Providers", "New Referrers", "Active Referrers",
+             "Cooling Down", "Inactive", "Needs Attention"],
+            horizontal=True,
+            key="prov_quick_filter",
+            label_visibility="collapsed",
+        )
+
+        # Detailed filters
+        with st.expander("Filters", expanded=False):
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                filter_name     = st.text_input("Provider Name",  key="pf_name").strip().lower()
+                filter_practice = st.text_input("Practice",       key="pf_practice").strip().lower()
+            with fc2:
+                filter_specialty = st.text_input("Specialty",     key="pf_specialty").strip().lower()
+                filter_status    = st.selectbox("Status", ["All", "Active", "Inactive"], key="pf_status")
+            with fc3:
+                filter_new_only  = st.checkbox("New Referrers Only", key="pf_new")
+                filter_trend     = st.selectbox("Trend", ["Any", "Up", "Stable", "Down"], key="pf_trend")
+                filter_attention = st.checkbox("Needs Attention Only", key="pf_attention")
+
+        # Build enriched rows
+        enriched = []
+        for prov in all_providers:
+            pid    = prov["id"]
+            stats  = get_provider_referral_stats(pid)
+            total  = stats["total"] or prov.get("total_referrals") or 0
+            last_30  = stats["last_30"]
+            last_90  = stats["last_90"]
+            prior_90 = stats["prior_90"]
+
+            first_date = prov.get("first_referral_date") or ""
+            last_date  = prov.get("last_referral_date")  or ""
+
+            stage         = _provider_stage(first_date, last_date, total, d30_str, d90_str, d180_str)
+            is_new_ref    = bool(prov.get("is_new_referrer"))
+            welcome_sent  = bool(prov.get("welcome_package_sent"))
+            needs_attn    = (last_90 < prior_90 and total > 0) or stage in ("Cooling Down", "Inactive")
+            outreach_rec  = _next_outreach_rec(stage, is_new_ref, welcome_sent)
+            practice_rec  = outreach_map.get(prov.get("practice_id"), {})
+
+            if last_90 > prior_90:
+                trend, trend_icon = "Up", "↑"
+            elif last_90 < prior_90:
+                trend, trend_icon = "Down", "↓"
+            else:
+                trend, trend_icon = "Stable", "→"
+
+            last_contact    = get_last_contact(prov.get("practice_id"))
+            last_contact_dt = (last_contact.get("contact_date") or "")[:10] if last_contact else ""
+
+            enriched.append({
+                "prov": prov, "total": total,
+                "last_30": last_30, "last_90": last_90, "prior_90": prior_90,
+                "first_date": first_date, "last_date": last_date,
+                "stage": stage, "trend": trend, "trend_icon": trend_icon,
+                "is_new_ref": is_new_ref, "needs_attn": needs_attn,
+                "last_contact_dt": last_contact_dt,
+                "outreach_rec": outreach_rec, "practice_rec": practice_rec,
+            })
+
+        # Filter
+        _qf_stage_map = {
+            "New Referrers":    "New Referrer",
+            "Active Referrers": "Active Referrer",
+            "Cooling Down":     "Cooling Down",
+            "Inactive":         "Inactive",
+        }
+        filtered = []
+        for r in enriched:
+            prov = r["prov"]
+            if quick_filter in _qf_stage_map and r["stage"] != _qf_stage_map[quick_filter]:
+                continue
+            if quick_filter == "Needs Attention" and not r["needs_attn"]:
+                continue
+            if filter_name     and filter_name     not in prov["name"].lower():
+                continue
+            if filter_practice and filter_practice not in (prov.get("practice_name") or "").lower():
+                continue
+            if filter_specialty and filter_specialty not in (prov.get("specialty") or "").lower():
+                continue
+            if filter_status != "All" and prov.get("status") != filter_status:
+                continue
+            if filter_new_only and not r["is_new_ref"]:
+                continue
+            if filter_trend != "Any" and r["trend"] != filter_trend:
+                continue
+            if filter_attention and not r["needs_attn"]:
+                continue
+            filtered.append(r)
+
+        filtered.sort(key=lambda r: (
+            not r["is_new_ref"],
+            not r["needs_attn"],
+            -r["total"],
+            r["prov"]["name"],
+        ))
+
+        # Summary metrics
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Providers",     len(filtered))
+        m2.metric("New Referrers", sum(1 for r in filtered if r["is_new_ref"]))
+        m3.metric("Active",        sum(1 for r in filtered if r["stage"] == "Active Referrer"))
+        m4.metric("Cooling Down",  sum(1 for r in filtered if r["stage"] == "Cooling Down"))
+        m5.metric("Inactive",      sum(1 for r in filtered if r["stage"] == "Inactive"))
+
+        st.markdown("---")
+
+        if not filtered:
+            st.info("No providers match the current filters.")
         else:
-            st.info("No providers found.")
+            for r in filtered:
+                prov  = r["prov"]
+                pid   = prov["id"]
+                stage = r["stage"]
+                stage_color = _STAGE_COLORS.get(stage, "#94a3b8")
+
+                alert_prefix = "🔔 " if r["is_new_ref"] else ("⚠️ " if r["needs_attn"] else "")
+                trend_display = f"{r['trend_icon']} {r['trend']}"
+                header = (
+                    f"{alert_prefix}{prov['name']}  —  "
+                    f"{prov.get('practice_name', '?')}  |  "
+                    f"{stage}  |  "
+                    f"Total: {r['total']}  |  "
+                    f"30d: {r['last_30']}  |  "
+                    f"Trend: {trend_display}"
+                )
+
+                with st.expander(header, expanded=r["is_new_ref"]):
+                    # Top metrics row
+                    mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+                    mc1.metric("Total",   r["total"])
+                    mc2.metric("30 Days", r["last_30"])
+                    mc3.metric("90 Days", r["last_90"])
+                    mc4.metric("Trend",   trend_display)
+                    mc5.markdown(
+                        f'<span style="background:{stage_color};color:#fff;padding:3px 8px;'
+                        f'border-radius:4px;font-size:0.8em;font-weight:600;">{stage}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    if r["is_new_ref"]:
+                        mc6.markdown(
+                            '<span style="background:#dc2626;color:#fff;padding:3px 8px;'
+                            'border-radius:4px;font-size:0.8em;font-weight:600;">NEW REFERRER</span>',
+                            unsafe_allow_html=True,
+                        )
+                    elif r["needs_attn"]:
+                        mc6.warning("Needs Attention")
+
+                    # Info columns
+                    info_l, info_r = st.columns(2)
+                    with info_l:
+                        spec = prov.get("specialty") or ""
+                        st.caption(f"Practice: {prov.get('practice_name', '?')}" + (f"  |  {spec}" if spec else ""))
+                        st.caption(f"Status: {prov.get('status', 'Active')}")
+                        st.caption(f"First Referral: {(r['first_date'] or 'None')[:10]}")
+                        st.caption(f"Last Referral:  {(r['last_date']  or 'None')[:10]}")
+                        st.caption(f"Last Contact (Office): {r['last_contact_dt'] or 'None'}")
+                    with info_r:
+                        st.markdown(f"**Next Recommended:** {r['outreach_rec']}")
+                        pr = r["practice_rec"]
+                        if pr:
+                            st.caption(f"Practice Lunch: {pr.get('lunch_status') or 'Not Started'}")
+                            st.caption(f"Practice Cookies: {pr.get('cookie_status') or 'Not Started'}")
+                        if prov.get("welcome_package_sent") or r["is_new_ref"]:
+                            st.caption(
+                                f"{'✅' if prov.get('welcome_package_sent') else '⬜'} Welcome Package  "
+                                f"{'✅' if prov.get('thank_you_sent') else '⬜'} Thank You  "
+                                f"{'✅' if prov.get('intro_folder_sent') else '⬜'} Intro Folder  "
+                                f"{'✅' if prov.get('business_card_sent') else '⬜'} Business Card"
+                            )
+
+                    # Action buttons
+                    st.markdown("---")
+                    a1, a2, a3, a4, a5 = st.columns(5)
+                    with a1:
+                        if st.button("Log Referral", key=f"lr_{pid}", type="primary", use_container_width=True):
+                            st.session_state.prov_log_referral_id = pid
+                            st.rerun()
+                    with a2:
+                        st.button(
+                            "Log Contact",
+                            key=f"prov_lc_{pid}",
+                            use_container_width=True,
+                            on_click=_cb_open_contact,
+                            args=(prov.get("practice_id"),),
+                        )
+                    with a3:
+                        if st.button("Provider Details", key=f"pd_{pid}", use_container_width=True):
+                            st.session_state.prov_detail_id = pid
+                            st.rerun()
+                    with a4:
+                        if st.button("Outreach Page", key=f"op_{pid}", use_container_width=True):
+                            st.session_state._nav_override = "🤝 Outreach"
+                            st.rerun()
+                    with a5:
+                        toggle_lbl = "Deactivate" if prov.get("status") == "Active" else "Activate"
+                        if st.button(toggle_lbl, key=f"tog_{pid}", use_container_width=True):
+                            new_s = "Inactive" if prov.get("status") == "Active" else "Active"
+                            update_provider(pid, {"status": new_s})
+                            st.rerun()
+
+                    # Recent referral history (collapsed)
+                    if r["total"] > 0:
+                        with st.expander("Recent Referral Activity", expanded=False):
+                            refs = get_provider_referrals(pid, limit=10)
+                            for ref in refs:
+                                st.caption(
+                                    f"📅 {str(ref.get('referral_date',''))[:10]}  |  "
+                                    f"Patient: {ref.get('patient_initials') or '—'}  |  "
+                                    f"{ref.get('notes') or ''}  |  "
+                                    f"By: {ref.get('logged_by') or ''}"
+                                )
+
+                    st.divider()
+
+        # Dialogs
+        if st.session_state.get("prov_log_referral_id"):
+            _log_referral_dialog(st.session_state.prov_log_referral_id)
+        if st.session_state.get("prov_detail_id"):
+            _provider_detail_dialog(st.session_state.prov_detail_id)
+
+        # Move provider (preserved, collapsed)
+        st.markdown("---")
+        with st.expander("Move Provider to New Practice", expanded=False):
+            prov_options = {
+                f"{p['name']} ({p.get('practice_name', 'N/A')})": p["id"]
+                for p in all_providers
+            }
+            selected_prov  = st.selectbox("Select Provider", list(prov_options.keys()), key="mv_prov_sel")
+            all_prac_list  = get_all_practices()
+            practice_opts  = {p["name"]: p["id"] for p in all_prac_list}
+            new_prac_sel   = st.selectbox("Move to Practice", list(practice_opts.keys()), key="mv_prac_sel")
+            mv_notes       = st.text_input("Move notes", key="mv_notes")
+            if st.button("Move Provider", key="mv_prov_btn"):
+                if selected_prov and new_prac_sel:
+                    move_provider(prov_options[selected_prov], practice_opts[new_prac_sel], mv_notes)
+                    st.success(f"Provider moved to {new_prac_sel}")
+                    st.rerun()
 
     # ── Add New Tab ────────────────────────────────────────────────────
     with tab_add:
