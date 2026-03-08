@@ -1,8 +1,9 @@
 """Outreach Management — inline lunch and cookie outreach tracking per practice.
 
-Status changes happen directly on the page with no pop-up modals.
+v2: Status changes happen directly on the page with NO pop-up modals.
 Dropdowns auto-fill the status date to today on change (via on_change callbacks).
 History opens only via the History button. Practice Name navigates to Providers.
+Lunch = cool palette (blue/teal/green). Cookie = warm palette (orange/red).
 """
 import streamlit as st
 from datetime import datetime, date, timedelta
