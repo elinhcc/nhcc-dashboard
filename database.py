@@ -335,6 +335,8 @@ def init_db():
     _migrate_column(c, "cookie_visits", "next_visit_date", "DATETIME")
     _migrate_column(c, "practices", "specialty", "TEXT")
     _migrate_column(c, "tasks", "notes", "TEXT")
+    _migrate_column(c, "tasks", "task_type", "TEXT")
+    _migrate_column(c, "tasks", "is_complete", "INTEGER DEFAULT 0")
     _migrate_column(c, "providers", "is_new_referrer", "INTEGER DEFAULT 0")
     _migrate_column(c, "providers", "specialty", "TEXT")
     _migrate_column(c, "providers", "first_referral_date", "DATE")
@@ -1479,6 +1481,66 @@ def get_outreach_history(practice_id: int, outreach_type=None, limit=30):
     except Exception:
         conn.close()
         return []
+
+
+def get_all_last_contacts() -> dict:
+    """Return {practice_id: last_contact_dict} — one DB call for all practices."""
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("contact_log").select("*")
+                    .order("contact_date", desc=True).execute().data or [])
+            seen: dict = {}
+            for r in rows:
+                pid = r.get("practice_id")
+                if pid and pid not in seen:
+                    seen[pid] = r
+            return seen
+        except Exception:
+            return {}
+    conn = _sqlite()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM contact_log ORDER BY contact_date DESC"
+        ).fetchall()
+        conn.close()
+        seen = {}
+        for r in rows:
+            pid = r["practice_id"]
+            if pid and pid not in seen:
+                seen[pid] = dict(r)
+        return seen
+    except Exception:
+        conn.close()
+        return {}
+
+
+def get_open_task_counts() -> dict:
+    """Return {practice_id: open_task_count} — one DB call for all practices."""
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("tasks").select("practice_id")
+                    .eq("is_complete", False).execute().data or [])
+            counts: dict = {}
+            for r in rows:
+                pid = r.get("practice_id")
+                if pid:
+                    counts[pid] = counts.get(pid, 0) + 1
+            return counts
+        except Exception:
+            return {}
+    conn = _sqlite()
+    try:
+        rows = conn.execute(
+            "SELECT practice_id, COUNT(*) as cnt FROM tasks "
+            "WHERE is_complete=0 GROUP BY practice_id"
+        ).fetchall()
+        conn.close()
+        return {r["practice_id"]: r["cnt"] for r in rows}
+    except Exception:
+        conn.close()
+        return {}
 
 
 def get_practices_with_new_referrers():

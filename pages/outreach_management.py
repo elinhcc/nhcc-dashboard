@@ -1,7 +1,14 @@
-"""Outreach Management — lunch and cookie relationship outreach tracking per practice."""
+"""Outreach Management — inline lunch and cookie outreach tracking per practice.
+
+Status changes happen directly on the page with no pop-up modals.
+Dropdowns auto-fill the status date to today on change (via on_change callbacks).
+History opens only via the History button. Practice Name navigates to Providers.
+"""
 import streamlit as st
 from datetime import datetime, date, timedelta
 from utils import db_exists
+
+# ── Status lists ───────────────────────────────────────────────────────────────
 
 LUNCH_STATUSES = [
     "Not Started",
@@ -10,73 +17,76 @@ LUNCH_STATUSES = [
     "Call 3 - Follow Up",
     "Approved - Need Schedule",
     "Scheduled",
+    "Completed",
     "Cancelled",
     "Declined",
-    "Completed",
     "Thank You Sent",
 ]
 
 COOKIE_STATUSES = [
     "Not Started",
     "Scheduled",
-    "Cancelled",
     "Completed",
+    "Cancelled",
     "Declined",
 ]
 
-# Status badge colors
-_LUNCH_COLORS = {
-    "Not Started":            "#94a3b8",
-    "Call 1 - LVM":           "#3b82f6",
-    "Call 2 - Follow Up":     "#6366f1",
-    "Call 3 - Follow Up":     "#8b5cf6",
-    "Approved - Need Schedule": "#f59e0b",
-    "Scheduled":              "#0D9488",
-    "Cancelled":              "#64748b",
-    "Declined":               "#ef4444",
-    "Completed":              "#16a34a",
-    "Thank You Sent":         "#0891b2",
+# ── Color palettes (cool = Lunch, warm = Cookie — visually distinct) ───────────
+
+_LC = {                                     # Lunch — cool palette
+    "Not Started":             "#94a3b8",
+    "Call 1 - LVM":            "#3b82f6",
+    "Call 2 - Follow Up":      "#60a5fa",
+    "Call 3 - Follow Up":      "#60a5fa",
+    "Approved - Need Schedule":"#7c3aed",
+    "Scheduled":               "#0D9488",
+    "Completed":               "#16a34a",
+    "Cancelled":               "#dc2626",
+    "Declined":                "#4b5563",
+    "Thank You Sent":          "#065f46",
 }
 
-_COOKIE_COLORS = {
+_CC = {                                     # Cookie — warm palette
     "Not Started":  "#94a3b8",
-    "Scheduled":    "#0D9488",
-    "Cancelled":    "#64748b",
-    "Completed":    "#16a34a",
-    "Declined":     "#ef4444",
+    "Scheduled":    "#ea580c",
+    "Completed":    "#15803d",
+    "Cancelled":    "#dc2626",
+    "Declined":     "#4b5563",
 }
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Small helpers ──────────────────────────────────────────────────────────────
 
-def _badge(text, color="#94a3b8"):
+def _badge(text, color="#94a3b8", fg="#fff"):
     return (
-        f'<span style="background:{color};color:#fff;padding:2px 8px;'
+        f'<span style="background:{color};color:{fg};padding:2px 8px;'
         f'border-radius:4px;font-size:0.78em;font-weight:600;">{text}</span>'
     )
 
 
-def _score_label(referral_volume):
-    v = referral_volume or 0
-    if v >= 10:
-        return "High", "#16a34a"
-    elif v >= 5:
-        return "Med", "#d97706"
-    elif v >= 1:
-        return "Low", "#3b82f6"
+def _score_info(vol):
+    v = vol or 0
+    if v >= 10: return "High", "#16a34a"
+    if v >= 5:  return "Med",  "#d97706"
+    if v >= 1:  return "Low",  "#3b82f6"
     return "None", "#94a3b8"
 
 
-def _fmt_date(d):
-    if not d:
-        return "—"
-    return str(d)[:10]
+def _fmt(d):
+    return str(d)[:10] if d else "—"
 
 
-def _create_task(practice_id, task_type, description, due_date, username, notes=""):
+def _parse_date(s):
+    try:
+        return date.fromisoformat(str(s)[:10]) if s else None
+    except Exception:
+        return None
+
+
+def _create_task(pid, task_type, description, due_date, username, notes=""):
     from database import add_task
     add_task({
-        "practice_id": practice_id,
+        "practice_id": pid,
         "task_type":   task_type,
         "description": description,
         "due_date":    due_date.isoformat() if hasattr(due_date, "isoformat") else str(due_date),
@@ -87,14 +97,14 @@ def _create_task(practice_id, task_type, description, due_date, username, notes=
     })
 
 
-def _create_calendar_event(practice_id, event_type, label, event_date, event_time, notes, username):
+def _create_event(pid, event_type, label, ev_date, ev_time, notes, username):
     from database import create_event
     create_event({
-        "practice_id":    practice_id,
+        "practice_id":    pid,
         "event_type":     event_type,
         "label":          label,
-        "scheduled_date": event_date.isoformat() if hasattr(event_date, "isoformat") else str(event_date),
-        "scheduled_time": event_time or "12:00 PM",
+        "scheduled_date": ev_date.isoformat() if hasattr(ev_date, "isoformat") else str(ev_date),
+        "scheduled_time": ev_time or "12:00 PM",
         "status":         "Scheduled",
         "notes":          notes or "",
         "created_by":     username,
@@ -102,280 +112,336 @@ def _create_calendar_event(practice_id, event_type, label, event_date, event_tim
     })
 
 
-# ── Lunch save logic ───────────────────────────────────────────────────────────
+# ── on_change callbacks (auto-fill date to today when dropdown changes) ────────
 
-def _save_lunch_update(practice_id, practice_name, new_status, status_date, note, extra, username):
-    from database import upsert_outreach_record, add_outreach_history
-
-    record_update = {
-        "lunch_status":      new_status,
-        "lunch_status_date": status_date.isoformat() if hasattr(status_date, "isoformat") else str(status_date),
-        "lunch_note":        note,
-    }
-
-    history_entry = {
-        "practice_id":  practice_id,
-        "outreach_type": "Lunch",
-        "status":       new_status,
-        "status_date":  status_date.isoformat() if hasattr(status_date, "isoformat") else str(status_date),
-        "note":         note,
-        "updated_by":   username,
-    }
-
-    today = date.today()
-
-    if new_status == "Call 1 - LVM":
-        follow_up = extra.get("follow_up_date", today + timedelta(days=3))
-        _create_task(
-            practice_id, "Follow Up Call",
-            f"Lunch Outreach - Follow Up Call to {practice_name}",
-            follow_up, username,
-            notes="Auto-created: follow up after Call 1 LVM",
-        )
-
-    elif new_status in ("Approved - Need Schedule", "Scheduled"):
-        if extra.get("schedule_now") and extra.get("event_date"):
-            event_date = extra["event_date"]
-            event_time = extra.get("event_time", "12:00 PM")
-            label = f"Lunch - {practice_name}"
-            _create_calendar_event(practice_id, "Lunch", label, event_date, event_time, note, username)
-            # Order food task: 2 days before
-            order_due = event_date - timedelta(days=2)
-            _create_task(practice_id, "Catering Order", f"Order Food for Lunch - {practice_name}", order_due, username,
-                         notes="Auto-created: 2 days before lunch")
-            # Confirmation call task: 1 day before
-            confirm_due = event_date - timedelta(days=1)
-            _create_task(practice_id, "Confirmation Call", f"Confirmation Call for Lunch - {practice_name}", confirm_due, username,
-                         notes="Auto-created: 1 day before lunch")
-        else:
-            schedule_due = today + timedelta(days=3)
-            _create_task(practice_id, "Schedule Lunch", f"Schedule Lunch - {practice_name}", schedule_due, username,
-                         notes="Auto-created: schedule later selected")
-
-    elif new_status == "Completed":
-        completed_date = extra.get("completed_date", status_date)
-        amount = extra.get("amount_spent", 0.0)
-        next_due = (completed_date + timedelta(days=183)) if hasattr(completed_date, "isoformat") else (today + timedelta(days=183))
-        record_update["last_lunch_date"]    = completed_date.isoformat() if hasattr(completed_date, "isoformat") else str(completed_date)
-        record_update["next_lunch_due"]     = next_due.isoformat()
-        record_update["lunch_amount_spent"] = amount
-        history_entry["amount_spent"]       = amount
-        _create_task(practice_id, "Lunch Outreach", f"Next Lunch Outreach - {practice_name}", next_due, username,
-                     notes="Auto-created: 6 months after completed lunch")
-
-    upsert_outreach_record(practice_id, record_update)
-    add_outreach_history(history_entry)
+def _on_lunch_change(pid):
+    st.session_state[f"ol_ld_{pid}"] = date.today()
 
 
-# ── Cookie save logic ──────────────────────────────────────────────────────────
-
-def _save_cookie_update(practice_id, practice_name, new_status, status_date, note, extra, username):
-    from database import upsert_outreach_record, add_outreach_history
-
-    record_update = {
-        "cookie_status":      new_status,
-        "cookie_status_date": status_date.isoformat() if hasattr(status_date, "isoformat") else str(status_date),
-        "cookie_note":        note,
-    }
-
-    history_entry = {
-        "practice_id":   practice_id,
-        "outreach_type": "Cookie",
-        "status":        new_status,
-        "status_date":   status_date.isoformat() if hasattr(status_date, "isoformat") else str(status_date),
-        "note":          note,
-        "updated_by":    username,
-    }
-
-    today = date.today()
-
-    if new_status == "Scheduled":
-        if extra.get("schedule_now") and extra.get("event_date"):
-            event_date = extra["event_date"]
-            event_time = extra.get("event_time", "10:00 AM")
-            label = f"Cookie Visit - {practice_name}"
-            _create_calendar_event(practice_id, "Cookie Visit", label, event_date, event_time, note, username)
-            order_due = event_date - timedelta(days=1)
-            _create_task(practice_id, "Catering Order", f"Order Cookies - {practice_name}", order_due, username,
-                         notes="Auto-created: 1 day before cookie visit")
-        else:
-            schedule_due = today + timedelta(days=3)
-            _create_task(practice_id, "Schedule Cookie Visit", f"Schedule Cookie Visit - {practice_name}", schedule_due, username,
-                         notes="Auto-created: schedule later selected")
-
-    elif new_status == "Completed":
-        completed_date = extra.get("completed_date", status_date)
-        amount = extra.get("amount_spent", 0.0)
-        next_due = (completed_date + timedelta(days=91)) if hasattr(completed_date, "isoformat") else (today + timedelta(days=91))
-        record_update["last_cookie_date"]    = completed_date.isoformat() if hasattr(completed_date, "isoformat") else str(completed_date)
-        record_update["next_cookie_due"]     = next_due.isoformat()
-        record_update["cookie_amount_spent"] = amount
-        history_entry["amount_spent"]        = amount
-        _create_task(practice_id, "Cookie Outreach", f"Next Cookie Outreach - {practice_name}", next_due, username,
-                     notes="Auto-created: 3 months after completed cookie visit")
-
-    upsert_outreach_record(practice_id, record_update)
-    add_outreach_history(history_entry)
+def _on_cookie_change(pid):
+    st.session_state[f"ol_cd_{pid}"] = date.today()
 
 
-# ── Dialogs ────────────────────────────────────────────────────────────────────
-
-@st.dialog("Update Lunch Status", width="large")
-def _lunch_dialog(practice_id, practice_name, record, username):
-    st.markdown(f"**Practice:** {practice_name}")
-    current = (record.get("lunch_status") or "Not Started") if record else "Not Started"
-    curr_idx = LUNCH_STATUSES.index(current) if current in LUNCH_STATUSES else 0
-
-    new_status = st.selectbox("New Lunch Status", LUNCH_STATUSES, index=curr_idx)
-    status_date = st.date_input("Status Date", value=date.today())
-    note = st.text_input("Note", placeholder="Brief note (required)", key="lunch_note_input")
-
-    extra = {}
-    error = None
-
-    if new_status == "Call 1 - LVM":
-        st.markdown("**Next Follow-Up**")
-        extra["follow_up_date"] = st.date_input(
-            "Next Follow Up Due Date", value=date.today() + timedelta(days=3), key="lunch_followup_date"
-        )
-
-    elif new_status in ("Approved - Need Schedule", "Scheduled"):
-        st.markdown("**Would you like to schedule this lunch now?**")
-        schedule_choice = st.radio("", ["Schedule Later", "Schedule Now"], horizontal=True, key="lunch_schedule_choice")
-        if schedule_choice == "Schedule Now":
-            extra["schedule_now"] = True
-            extra["event_date"] = st.date_input("Lunch Date", value=date.today() + timedelta(days=7), key="lunch_event_date")
-            extra["event_time"] = st.text_input("Lunch Time", value="12:00 PM", key="lunch_event_time")
-            st.caption("A calendar event will be created and tasks for ordering food and a confirmation call will be added automatically.")
-        else:
-            extra["schedule_now"] = False
-            st.caption("A 'Schedule Lunch' task will be created due in 3 days.")
-
-    elif new_status == "Completed":
-        extra["completed_date"] = st.date_input("Completed Date", value=date.today(), key="lunch_completed_date")
-        extra["amount_spent"] = st.number_input("Amount Spent ($)", min_value=0.0, step=0.50, value=0.0, key="lunch_amount")
-        st.caption("Next Lunch Due will be set to 6 months from the completed date.")
-
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("Save", type="primary", use_container_width=True, key="lunch_save_btn"):
-            if not note.strip():
-                error = "Note is required."
-            elif new_status == "Completed" and extra.get("amount_spent") is None:
-                error = "Please enter the amount spent."
-            else:
-                _save_lunch_update(practice_id, practice_name, new_status, status_date, note.strip(), extra, username)
-                st.session_state.outreach_lunch_info = None
-                st.success("Lunch status updated!")
-                st.rerun()
-
-    with col2:
-        if st.button("Cancel", use_container_width=True, key="lunch_cancel_btn"):
-            st.session_state.outreach_lunch_info = None
-            st.rerun()
-
-    if error:
-        st.error(error)
-
-
-@st.dialog("Update Cookie Status", width="large")
-def _cookie_dialog(practice_id, practice_name, record, username):
-    st.markdown(f"**Practice:** {practice_name}")
-    current = (record.get("cookie_status") or "Not Started") if record else "Not Started"
-    curr_idx = COOKIE_STATUSES.index(current) if current in COOKIE_STATUSES else 0
-
-    new_status = st.selectbox("New Cookie Status", COOKIE_STATUSES, index=curr_idx)
-    status_date = st.date_input("Status Date", value=date.today())
-    note = st.text_input("Note", placeholder="Brief note (required)", key="cookie_note_input")
-
-    extra = {}
-    error = None
-
-    if new_status == "Scheduled":
-        st.markdown("**Would you like to schedule this cookie visit now?**")
-        schedule_choice = st.radio("", ["Schedule Later", "Schedule Now"], horizontal=True, key="cookie_schedule_choice")
-        if schedule_choice == "Schedule Now":
-            extra["schedule_now"] = True
-            extra["event_date"] = st.date_input("Cookie Visit Date", value=date.today() + timedelta(days=3), key="cookie_event_date")
-            extra["event_time"] = st.text_input("Visit Time", value="10:00 AM", key="cookie_event_time")
-            st.caption("A calendar event will be created and a task to order cookies will be added automatically.")
-        else:
-            extra["schedule_now"] = False
-            st.caption("A 'Schedule Cookie Visit' task will be created due in 3 days.")
-
-    elif new_status == "Completed":
-        extra["completed_date"] = st.date_input("Completed Date", value=date.today(), key="cookie_completed_date")
-        extra["amount_spent"] = st.number_input("Amount Spent ($)", min_value=0.0, step=0.50, value=0.0, key="cookie_amount")
-        st.caption("Next Cookie Due will be set to 3 months from the completed date.")
-
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("Save", type="primary", use_container_width=True, key="cookie_save_btn"):
-            if not note.strip():
-                error = "Note is required."
-            else:
-                _save_cookie_update(practice_id, practice_name, new_status, status_date, note.strip(), extra, username)
-                st.session_state.outreach_cookie_info = None
-                st.success("Cookie status updated!")
-                st.rerun()
-
-    with col2:
-        if st.button("Cancel", use_container_width=True, key="cookie_cancel_btn"):
-            st.session_state.outreach_cookie_info = None
-            st.rerun()
-
-    if error:
-        st.error(error)
-
+# ── History dialog (only place a dialog is used) ───────────────────────────────
 
 @st.dialog("Outreach History", width="large")
-def _history_dialog(practice_id, practice_name):
+def _history_dialog(pid, pname):
     from database import get_outreach_history
-    st.markdown(f"**{practice_name}** — Outreach History")
+    st.markdown(f"**{pname}** — Outreach History")
 
-    tab_lunch, tab_cookie, tab_all = st.tabs(["Lunch", "Cookie", "All"])
+    tab_all, tab_lunch, tab_cookie = st.tabs(["All", "Lunch", "Cookie"])
 
-    def _render_history(entries):
+    def _render(entries):
         if not entries:
             st.info("No history yet.")
             return
         for h in entries:
             otype  = h.get("outreach_type", "")
             status = h.get("status", "")
-            color  = _LUNCH_COLORS.get(status, "#94a3b8") if otype == "Lunch" else _COOKIE_COLORS.get(status, "#94a3b8")
-            col_a, col_b = st.columns([3, 2])
-            with col_a:
+            color  = _LC.get(status, "#94a3b8") if otype == "Lunch" else _CC.get(status, "#94a3b8")
+            c1, c2 = st.columns([3, 2])
+            with c1:
                 st.markdown(
-                    f'{_badge(otype, "#0D9488" if otype=="Lunch" else "#16a34a")} '
-                    f'{_badge(status, color)}',
+                    _badge(otype, "#0D9488" if otype == "Lunch" else "#ea580c") +
+                    " " + _badge(status, color),
                     unsafe_allow_html=True,
                 )
                 if h.get("note"):
                     st.caption(h["note"])
-            with col_b:
-                st.caption(f"Date: {_fmt_date(h.get('status_date'))}")
+            with c2:
+                st.caption(f"Date: {_fmt(h.get('status_date'))}")
                 if h.get("amount_spent"):
-                    st.caption(f"Spent: ${h['amount_spent']:.2f}")
-                st.caption(f"By: {h.get('updated_by','?')}  |  {str(h.get('created_at',''))[:16]}")
+                    st.caption(f"Spent: ${float(h['amount_spent']):.2f}")
+                st.caption(f"By: {h.get('updated_by','?')}  ·  {str(h.get('created_at',''))[:16]}")
             st.divider()
 
-    with tab_lunch:
-        _render_history(get_outreach_history(practice_id, outreach_type="Lunch"))
-    with tab_cookie:
-        _render_history(get_outreach_history(practice_id, outreach_type="Cookie"))
     with tab_all:
-        _render_history(get_outreach_history(practice_id))
+        _render(get_outreach_history(pid))
+    with tab_lunch:
+        _render(get_outreach_history(pid, outreach_type="Lunch"))
+    with tab_cookie:
+        _render(get_outreach_history(pid, outreach_type="Cookie"))
 
-    if st.button("Close", use_container_width=True):
-        st.session_state.outreach_history_info = None
+    if st.button("Close", use_container_width=True, key=f"hist_close_{pid}"):
+        st.session_state.ol_history = None
         st.rerun()
 
 
-# ── Main page ─────────────────────────────────────────────────────────────────
+# ── Save logic ─────────────────────────────────────────────────────────────────
+
+def _save_lunch(pid, pname, record, new_status, status_date, note, amount, followup, username):
+    from database import upsert_outreach_record, add_outreach_history
+    today = date.today()
+    sd    = status_date or today
+
+    update  = {
+        "lunch_status":      new_status,
+        "lunch_status_date": sd.isoformat(),
+        "lunch_note":        note or "",
+    }
+    history = {
+        "practice_id":   pid,
+        "outreach_type": "Lunch",
+        "status":        new_status,
+        "status_date":   sd.isoformat(),
+        "note":          note or "",
+        "updated_by":    username,
+    }
+
+    if new_status == "Completed":
+        next_due = sd + timedelta(days=183)
+        update["last_lunch_date"]    = sd.isoformat()
+        update["next_lunch_due"]     = next_due.isoformat()
+        update["lunch_amount_spent"] = amount or 0.0
+        history["amount_spent"]      = amount or 0.0
+        _create_task(pid, "Lunch Outreach",
+                     f"Next Lunch Outreach — {pname}", next_due, username,
+                     "Auto-created: 6 months after completed lunch")
+
+    elif new_status == "Call 1 - LVM":
+        fu = followup or (today + timedelta(days=3))
+        _create_task(pid, "Follow Up Call",
+                     f"Follow Up Call — {pname}", fu, username,
+                     "Auto-created: follow up after Call 1 LVM")
+
+    upsert_outreach_record(pid, update)
+    add_outreach_history(history)
+
+    # Clear widget keys so next render re-initialises from fresh DB data
+    for k in [f"ol_ls_{pid}", f"ol_ld_{pid}", f"ol_ln_{pid}",
+              f"ol_la_{pid}", f"ol_lf_{pid}"]:
+        st.session_state.pop(k, None)
+
+
+def _save_cookie(pid, pname, record, new_status, status_date, note, amount, username):
+    from database import upsert_outreach_record, add_outreach_history
+    today = date.today()
+    sd    = status_date or today
+
+    update  = {
+        "cookie_status":      new_status,
+        "cookie_status_date": sd.isoformat(),
+        "cookie_note":        note or "",
+    }
+    history = {
+        "practice_id":   pid,
+        "outreach_type": "Cookie",
+        "status":        new_status,
+        "status_date":   sd.isoformat(),
+        "note":          note or "",
+        "updated_by":    username,
+    }
+
+    if new_status == "Completed":
+        next_due = sd + timedelta(days=91)
+        update["last_cookie_date"]    = sd.isoformat()
+        update["next_cookie_due"]     = next_due.isoformat()
+        update["cookie_amount_spent"] = amount or 0.0
+        history["amount_spent"]       = amount or 0.0
+        _create_task(pid, "Cookie Outreach",
+                     f"Next Cookie Outreach — {pname}", next_due, username,
+                     "Auto-created: 3 months after completed cookie visit")
+
+    upsert_outreach_record(pid, update)
+    add_outreach_history(history)
+
+    for k in [f"ol_cs_{pid}", f"ol_cd_{pid}", f"ol_cn_{pid}", f"ol_ca_{pid}"]:
+        st.session_state.pop(k, None)
+
+
+# ── Inline schedule event form ─────────────────────────────────────────────────
+
+def _render_schedule_form(pid, pname, etype, username):
+    """Inline (no modal) form that creates a Calendar event + automation tasks."""
+    label        = f"{'Lunch' if etype == 'Lunch' else 'Cookie Visit'} - {pname}"
+    default_time = "12:00 PM" if etype == "Lunch" else "10:00 AM"
+    flag_k       = f"ol_sf_{etype}_{pid}"
+
+    st.markdown(f"**Schedule {etype} on Calendar**")
+    ev_date  = st.date_input("Date", value=date.today() + timedelta(days=7),
+                              key=f"ol_sf_dt_{etype}_{pid}")
+    ev_time  = st.text_input("Time", value=default_time,
+                              key=f"ol_sf_tm_{etype}_{pid}")
+    ev_notes = st.text_input("Notes (optional)", placeholder="e.g. bring brochures",
+                              key=f"ol_sf_nt_{etype}_{pid}")
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        if st.button("Create Calendar Event", key=f"ol_sf_save_{etype}_{pid}",
+                     type="primary", use_container_width=True):
+            _create_event(pid, etype, label, ev_date, ev_time, ev_notes, username)
+            if etype == "Lunch":
+                _create_task(pid, "Catering Order",
+                             f"Order Food for Lunch — {pname}",
+                             ev_date - timedelta(days=2), username,
+                             "Auto-created: 2 days before lunch")
+                _create_task(pid, "Confirmation Call",
+                             f"Confirmation Call for Lunch — {pname}",
+                             ev_date - timedelta(days=1), username,
+                             "Auto-created: 1 day before lunch")
+            else:
+                _create_task(pid, "Catering Order",
+                             f"Order Cookies — {pname}",
+                             ev_date - timedelta(days=1), username,
+                             "Auto-created: 1 day before cookie visit")
+            st.session_state[flag_k] = False
+            st.success("Calendar event created. Check the Calendar page.")
+            st.rerun()
+    with sc2:
+        if st.button("Schedule Later", key=f"ol_sf_skip_{etype}_{pid}",
+                     use_container_width=True):
+            later = date.today() + timedelta(days=3)
+            if etype == "Lunch":
+                _create_task(pid, "Schedule Lunch",
+                             f"Schedule Lunch — {pname}", later, username,
+                             "Auto-created: schedule later selected")
+            else:
+                _create_task(pid, "Schedule Cookie Visit",
+                             f"Schedule Cookie Visit — {pname}", later, username,
+                             "Auto-created: schedule later selected")
+            st.session_state[flag_k] = False
+            st.rerun()
+
+
+# ── Per-practice section renderers ─────────────────────────────────────────────
+
+def _render_lunch(pid, pname, record, username, today):
+    """Render the inline Lunch outreach section for one practice."""
+    saved = record.get("lunch_status") or "Not Started"
+    idx   = LUNCH_STATUSES.index(saved) if saved in LUNCH_STATUSES else 0
+
+    # Initialise date key once from DB; on_change callback overwrites it to today
+    if f"ol_ld_{pid}" not in st.session_state:
+        st.session_state[f"ol_ld_{pid}"] = _parse_date(record.get("lunch_status_date")) or today
+
+    # Status dropdown — on_change auto-fills date to today
+    new_status = st.selectbox(
+        "Lunch Status", LUNCH_STATUSES, index=idx,
+        key=f"ol_ls_{pid}",
+        on_change=_on_lunch_change, args=(pid,),
+        label_visibility="collapsed",
+    )
+
+    # Coloured badge showing current selection
+    st.markdown(_badge(new_status, _LC.get(new_status, "#94a3b8")), unsafe_allow_html=True)
+
+    # Status date (auto-filled by on_change, always editable)
+    st.date_input("Status Date", key=f"ol_ld_{pid}", label_visibility="collapsed")
+    status_date = st.session_state.get(f"ol_ld_{pid}", today)
+
+    # Note field
+    if f"ol_ln_{pid}" not in st.session_state:
+        st.session_state[f"ol_ln_{pid}"] = record.get("lunch_note") or ""
+    st.text_input("Note", key=f"ol_ln_{pid}",
+                  placeholder="Note…", label_visibility="collapsed")
+    note = st.session_state.get(f"ol_ln_{pid}", "")
+
+    # Extra fields that appear for specific statuses
+    amount    = None
+    followup  = None
+
+    if new_status == "Completed":
+        if f"ol_la_{pid}" not in st.session_state:
+            st.session_state[f"ol_la_{pid}"] = float(record.get("lunch_amount_spent") or 0)
+        st.number_input("Amount Spent ($)", min_value=0.0, step=0.50,
+                        key=f"ol_la_{pid}", label_visibility="collapsed")
+        amount = st.session_state.get(f"ol_la_{pid}", 0.0)
+
+    elif new_status == "Call 1 - LVM":
+        if f"ol_lf_{pid}" not in st.session_state:
+            st.session_state[f"ol_lf_{pid}"] = today + timedelta(days=3)
+        st.date_input("Follow-up Due", key=f"ol_lf_{pid}")
+        followup = st.session_state.get(f"ol_lf_{pid}")
+
+    # Last / Next summary line
+    last_s = _fmt(record.get("last_lunch_date"))
+    next_s = _fmt(record.get("next_lunch_due"))
+    next_d = str(record.get("next_lunch_due") or "")[:10]
+    overdue = next_d and next_d < today.isoformat() and new_status not in (
+        "Scheduled", "Approved - Need Schedule")
+    if last_s != "—" or next_s != "—":
+        nd_display = f":red[{next_s} OVERDUE]" if overdue else next_s
+        st.caption(f"Last: {last_s}  ·  Next due: {nd_display}")
+
+    # Schedule Now button (only for scheduling statuses)
+    sched_k = f"ol_sf_Lunch_{pid}"
+    if new_status in ("Approved - Need Schedule", "Scheduled"):
+        if st.button("Schedule Now", key=f"ol_lsn_{pid}", use_container_width=True):
+            st.session_state[sched_k] = True
+
+    if st.session_state.get(sched_k):
+        _render_schedule_form(pid, pname, "Lunch", username)
+
+    # Save button — primary (teal) when pending, secondary when unchanged
+    is_pending = new_status != saved
+    if st.button("Save Lunch", key=f"ol_lsave_{pid}",
+                 type="primary" if is_pending else "secondary",
+                 use_container_width=True):
+        _save_lunch(pid, pname, record, new_status, status_date,
+                    note, amount, followup, username)
+        st.rerun()
+
+
+def _render_cookie(pid, pname, record, username, today):
+    """Render the inline Cookie outreach section for one practice."""
+    saved = record.get("cookie_status") or "Not Started"
+    idx   = COOKIE_STATUSES.index(saved) if saved in COOKIE_STATUSES else 0
+
+    if f"ol_cd_{pid}" not in st.session_state:
+        st.session_state[f"ol_cd_{pid}"] = _parse_date(record.get("cookie_status_date")) or today
+
+    new_status = st.selectbox(
+        "Cookie Status", COOKIE_STATUSES, index=idx,
+        key=f"ol_cs_{pid}",
+        on_change=_on_cookie_change, args=(pid,),
+        label_visibility="collapsed",
+    )
+
+    st.markdown(_badge(new_status, _CC.get(new_status, "#94a3b8")), unsafe_allow_html=True)
+
+    st.date_input("Status Date", key=f"ol_cd_{pid}", label_visibility="collapsed")
+    status_date = st.session_state.get(f"ol_cd_{pid}", today)
+
+    if f"ol_cn_{pid}" not in st.session_state:
+        st.session_state[f"ol_cn_{pid}"] = record.get("cookie_note") or ""
+    st.text_input("Note", key=f"ol_cn_{pid}",
+                  placeholder="Note…", label_visibility="collapsed")
+    note = st.session_state.get(f"ol_cn_{pid}", "")
+
+    amount = None
+    if new_status == "Completed":
+        if f"ol_ca_{pid}" not in st.session_state:
+            st.session_state[f"ol_ca_{pid}"] = float(record.get("cookie_amount_spent") or 0)
+        st.number_input("Amount Spent ($)", min_value=0.0, step=0.50,
+                        key=f"ol_ca_{pid}", label_visibility="collapsed")
+        amount = st.session_state.get(f"ol_ca_{pid}", 0.0)
+
+    last_s = _fmt(record.get("last_cookie_date"))
+    next_s = _fmt(record.get("next_cookie_due"))
+    next_d = str(record.get("next_cookie_due") or "")[:10]
+    overdue = next_d and next_d < today.isoformat() and new_status != "Scheduled"
+    if last_s != "—" or next_s != "—":
+        nd_display = f":red[{next_s} OVERDUE]" if overdue else next_s
+        st.caption(f"Last: {last_s}  ·  Next due: {nd_display}")
+
+    sched_k = f"ol_sf_Cookie Visit_{pid}"
+    if new_status == "Scheduled":
+        if st.button("Schedule Now", key=f"ol_csn_{pid}", use_container_width=True):
+            st.session_state[sched_k] = True
+
+    if st.session_state.get(sched_k):
+        _render_schedule_form(pid, pname, "Cookie Visit", username)
+
+    is_pending = new_status != saved
+    if st.button("Save Cookies", key=f"ol_csave_{pid}",
+                 type="primary" if is_pending else "secondary",
+                 use_container_width=True):
+        _save_cookie(pid, pname, record, new_status, status_date,
+                     note, amount, username)
+        st.rerun()
+
+
+# ── Main page ──────────────────────────────────────────────────────────────────
 
 def show_outreach_management():
     st.markdown("## Outreach Management")
@@ -386,236 +452,164 @@ def show_outreach_management():
         return
 
     from database import (
-        get_all_practices, get_tasks,
-        get_all_outreach_records, get_practices_with_new_referrers,
+        get_all_practices,
+        get_all_outreach_records,
+        get_practices_with_new_referrers,
+        get_all_last_contacts,
+        get_open_task_counts,
     )
 
-    # Session state defaults
-    st.session_state.setdefault("outreach_lunch_info",   None)
-    st.session_state.setdefault("outreach_cookie_info",  None)
-    st.session_state.setdefault("outreach_history_info", None)
+    st.session_state.setdefault("ol_history", None)
 
     user_dict = st.session_state.get("user", {})
     username  = user_dict.get("username", "")
-    is_admin  = user_dict.get("role") == "admin"
-    today_str = date.today().isoformat()
+    today     = date.today()
+    today_str = today.isoformat()
 
-    # Load data
-    practices      = get_all_practices(status_filter="Active")
-    outreach_map   = get_all_outreach_records()         # {practice_id: record}
-    new_ref_pids   = get_practices_with_new_referrers() # set of practice_ids
-    all_open_tasks = get_tasks(is_complete=0)
-    task_counts    = {}
-    for t in all_open_tasks:
-        pid = t.get("practice_id")
-        if pid:
-            task_counts[pid] = task_counts.get(pid, 0) + 1
+    # ── Batch data load (minimal DB calls) ─────────────────────────────────────
+    practices     = get_all_practices(status_filter="Active")
+    outreach_map  = get_all_outreach_records()
+    new_ref_pids  = get_practices_with_new_referrers()
+    last_contacts = get_all_last_contacts()
+    task_counts   = get_open_task_counts()
 
-    # Build rows
+    # ── Build row dicts ────────────────────────────────────────────────────────
     rows = []
     for p in practices:
-        pid     = p["id"]
-        record  = outreach_map.get(pid) or {}
-        score_label, score_color = _score_label(p.get("referral_volume"))
+        pid    = p["id"]
+        rec    = outreach_map.get(pid) or {}
+        sl, sc = _score_info(p.get("referral_volume"))
+        lc     = last_contacts.get(pid)
+        lc_txt = (
+            f"Last contact: {str(lc.get('contact_date',''))[:10]} ({lc.get('contact_type','')})"
+            if lc else "No contact logged"
+        )
         rows.append({
-            "practice":         p,
-            "record":           record,
-            "score_label":      score_label,
-            "score_color":      score_color,
-            "new_referrer":     pid in new_ref_pids,
-            "open_tasks":       task_counts.get(pid, 0),
-            "lunch_status":     record.get("lunch_status") or "Not Started",
-            "lunch_date":       record.get("lunch_status_date"),
-            "lunch_note":       record.get("lunch_note") or "",
-            "last_lunch":       record.get("last_lunch_date"),
-            "next_lunch":       record.get("next_lunch_due"),
-            "cookie_status":    record.get("cookie_status") or "Not Started",
-            "cookie_date":      record.get("cookie_status_date"),
-            "cookie_note":      record.get("cookie_note") or "",
-            "last_cookie":      record.get("last_cookie_date"),
-            "next_cookie":      record.get("next_cookie_due"),
+            "p": p, "pid": pid, "rec": rec,
+            "score_label": sl, "score_color": sc,
+            "new_ref":     pid in new_ref_pids,
+            "open_tasks":  task_counts.get(pid, 0),
+            "lc_txt":      lc_txt,
+            "lunch_status":  rec.get("lunch_status")  or "Not Started",
+            "cookie_status": rec.get("cookie_status") or "Not Started",
+            "next_lunch":    str(rec.get("next_lunch_due")  or "")[:10],
+            "next_cookie":   str(rec.get("next_cookie_due") or "")[:10],
         })
 
     # ── Filters ────────────────────────────────────────────────────────────────
+    in_90 = (today + timedelta(days=90)).isoformat()
     with st.expander("Filters", expanded=False):
-        fc1, fc2, fc3, fc4 = st.columns(4)
+        fc1, fc2, fc3 = st.columns(3)
         with fc1:
-            filter_name = st.text_input("Practice Name", key="of_name").strip().lower()
+            f_name   = st.text_input("Practice Name",   key="ol_fn").strip().lower()
+            f_lunch  = st.selectbox("Lunch Status",  ["All"] + LUNCH_STATUSES,  key="ol_fl")
         with fc2:
-            filter_lunch = st.selectbox("Lunch Status", ["All"] + LUNCH_STATUSES, key="of_lunch")
+            f_cookie = st.selectbox("Cookie Status", ["All"] + COOKIE_STATUSES, key="ol_fc")
+            f_alert  = st.checkbox("New Referrer Alert Only",   key="ol_fa")
         with fc3:
-            filter_cookie = st.selectbox("Cookie Status", ["All"] + COOKIE_STATUSES, key="of_cookie")
-        with fc4:
-            filter_alert  = st.checkbox("New Referrer Alert Only", key="of_alert")
-            filter_tasks  = st.checkbox("Has Open Tasks Only",     key="of_tasks")
-            filter_score  = st.selectbox("Min Score", ["Any", "Low", "Med", "High"], key="of_score")
+            f_tasks      = st.checkbox("Has Open Tasks Only",   key="ol_ft")
+            f_lunch_due  = st.checkbox("Lunch Due ≤ 90 days",  key="ol_fld")
+            f_cookie_due = st.checkbox("Cookie Due ≤ 90 days", key="ol_fcd")
 
-    # Apply filters
-    _score_rank = {"None": 0, "Low": 1, "Med": 2, "High": 3}
-    min_rank    = _score_rank.get(filter_score, 0) if filter_score != "Any" else 0
+    _sr = {"None": 0, "Low": 1, "Med": 2, "High": 3}
     filtered = [
         r for r in rows
-        if (not filter_name   or filter_name in r["practice"]["name"].lower())
-        and (filter_lunch  == "All" or r["lunch_status"]  == filter_lunch)
-        and (filter_cookie == "All" or r["cookie_status"] == filter_cookie)
-        and (not filter_alert or r["new_referrer"])
-        and (not filter_tasks or r["open_tasks"] > 0)
-        and (_score_rank.get(r["score_label"], 0) >= min_rank)
+        if (not f_name      or f_name in r["p"]["name"].lower())
+        and (f_lunch  == "All" or r["lunch_status"]  == f_lunch)
+        and (f_cookie == "All" or r["cookie_status"] == f_cookie)
+        and (not f_alert      or r["new_ref"])
+        and (not f_tasks      or r["open_tasks"] > 0)
+        and (not f_lunch_due  or (r["next_lunch"]  and today_str <= r["next_lunch"]  <= in_90))
+        and (not f_cookie_due or (r["next_cookie"] and today_str <= r["next_cookie"] <= in_90))
     ]
-
-    # Sort: new referrers first, then by score desc, then by name
     filtered.sort(key=lambda r: (
-        not r["new_referrer"],
-        -_score_rank.get(r["score_label"], 0),
-        r["practice"]["name"],
+        not r["new_ref"],
+        -_sr.get(r["score_label"], 0),
+        r["p"]["name"],
     ))
 
     # ── Summary metrics ────────────────────────────────────────────────────────
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Practices", len(filtered))
-    m2.metric("New Referrer Alerts", sum(1 for r in filtered if r["new_referrer"]))
-    m3.metric("Lunch In Progress", sum(
-        1 for r in filtered if r["lunch_status"] not in ("Not Started", "Completed", "Declined")
+    m1.metric("Practices",          len(filtered))
+    m2.metric("New Referrer Alerts", sum(1 for r in filtered if r["new_ref"]))
+    m3.metric("Lunch In Progress",   sum(
+        1 for r in filtered
+        if r["lunch_status"] not in ("Not Started", "Completed", "Declined", "Cancelled")
     ))
-    m4.metric("Cookie In Progress", sum(
-        1 for r in filtered if r["cookie_status"] not in ("Not Started", "Completed", "Declined")
+    m4.metric("Cookie In Progress",  sum(
+        1 for r in filtered
+        if r["cookie_status"] not in ("Not Started", "Completed", "Declined", "Cancelled")
     ))
-    overdue_lunch = sum(
+    m5.metric("Lunch Overdue",       sum(
         1 for r in filtered
         if r["next_lunch"] and r["next_lunch"] < today_str
         and r["lunch_status"] not in ("Scheduled", "Approved - Need Schedule")
-    )
-    m5.metric("Lunch Overdue", overdue_lunch, delta=None)
+    ))
 
     st.markdown("---")
 
     if not filtered:
         st.info("No practices match the current filters.")
-    else:
-        _show_table(filtered, username, is_admin)
+        return
 
-    # ── Render dialogs ─────────────────────────────────────────────────────────
-    info = st.session_state.get("outreach_lunch_info")
-    if info:
-        _lunch_dialog(info["pid"], info["name"], info["record"], username)
+    # ── Practice cards ─────────────────────────────────────────────────────────
+    for r in filtered:
+        p    = r["p"]
+        pid  = r["pid"]
+        pname = p["name"]
 
-    info = st.session_state.get("outreach_cookie_info")
-    if info:
-        _cookie_dialog(info["pid"], info["name"], info["record"], username)
-
-    info = st.session_state.get("outreach_history_info")
-    if info:
-        _history_dialog(info["pid"], info["name"])
-
-
-# ── Table rendering ───────────────────────────────────────────────────────────
-
-def _show_table(rows, username, is_admin):
-    today_str = date.today().isoformat()
-
-    for r in rows:
-        p            = r["practice"]
-        pid          = p["id"]
-        pname        = p["name"]
-        lunch_status = r["lunch_status"]
-        cookie_status = r["cookie_status"]
-        lunch_color  = _LUNCH_COLORS.get(lunch_status, "#94a3b8")
-        cookie_color = _COOKIE_COLORS.get(cookie_status, "#94a3b8")
-
-        # Overdue flags
-        lunch_overdue = (
-            r["next_lunch"] and r["next_lunch"] < today_str
-            and lunch_status not in ("Scheduled", "Approved - Need Schedule")
-        )
-        cookie_overdue = (
-            r["next_cookie"] and r["next_cookie"] < today_str
-            and cookie_status not in ("Scheduled",)
-        )
-
-        # ── Practice header row ────────────────────────────────────────────
-        hcol1, hcol2 = st.columns([5, 2])
-        with hcol1:
-            # Practice name as navigation button
-            name_label = pname
-            if r["new_referrer"]:
-                name_label += "  🔔 NEW REFERRER"
-            if st.button(
-                name_label,
-                key=f"pname_{pid}",
-                help="Go to Providers page",
-                use_container_width=False,
-            ):
-                st.session_state._nav_override = "Providers"
+        # Header row: practice name (nav button) | badges | History
+        hc1, hc2, hc3 = st.columns([4, 3, 1])
+        with hc1:
+            btn_lbl = pname + ("  🔔" if r["new_ref"] else "")
+            if st.button(btn_lbl, key=f"ol_pn_{pid}",
+                         help="Open Practice page", use_container_width=False):
+                st.session_state._nav_override = "🏢 Providers"
+                st.session_state.ol_jump_practice = pid
                 st.rerun()
-        with hcol2:
-            badges = f'{_badge(r["score_label"], r["score_color"])}'
-            if r["new_referrer"]:
-                badges += f'&nbsp;{_badge("New Referrer", "#dc2626")}'
-            if r["open_tasks"]:
-                badges += f'&nbsp;{_badge(str(r["open_tasks"]) + " tasks", "#f59e0b")}'
-            st.markdown(badges, unsafe_allow_html=True)
 
-        # ── Lunch + Cookie two-column layout ──────────────────────────────
+        with hc2:
+            badge_html = _badge(r["score_label"], r["score_color"])
+            if r["new_ref"]:
+                badge_html += " " + _badge("New Referrer", "#dc2626")
+            if r["open_tasks"]:
+                badge_html += " " + _badge(
+                    f"{r['open_tasks']} task{'s' if r['open_tasks'] != 1 else ''}",
+                    "#f59e0b",
+                )
+            st.markdown(badge_html, unsafe_allow_html=True)
+
+        with hc3:
+            if st.button("History", key=f"ol_hist_{pid}", use_container_width=True):
+                st.session_state.ol_history = (pid, pname)
+                st.rerun()
+
+        # Gray summary line
+        st.caption(r["lc_txt"] + f"  ·  {r['open_tasks']} open task{'s' if r['open_tasks'] != 1 else ''}")
+
+        # Two-column inline edit: Lunch (cool blue/teal) | Cookie (warm orange)
         lcol, ccol = st.columns(2)
 
         with lcol:
             st.markdown(
-                f'**Lunch:** {_badge(lunch_status, lunch_color)}',
+                '<p style="font-size:0.8em;font-weight:700;color:#0D9488;'
+                'margin:4px 0 2px 0;">LUNCH</p>',
                 unsafe_allow_html=True,
             )
-            if r["lunch_date"]:
-                st.caption(f"Status date: {_fmt_date(r['lunch_date'])}")
-            if r["lunch_note"]:
-                st.caption(f"Note: {r['lunch_note']}")
-            info_parts = []
-            if r["last_lunch"]:
-                info_parts.append(f"Last: {_fmt_date(r['last_lunch'])}")
-            if r["next_lunch"]:
-                nd = _fmt_date(r["next_lunch"])
-                label = f"Next due: **:red[{nd} OVERDUE]**" if lunch_overdue else f"Next due: {nd}"
-                info_parts.append(label)
-            if info_parts:
-                st.markdown("  |  ".join(info_parts))
-            bcol1, bcol2 = st.columns(2)
-            with bcol1:
-                if st.button("Update Lunch", key=f"ul_{pid}", use_container_width=True):
-                    st.session_state.outreach_lunch_info = {
-                        "pid": pid, "name": pname, "record": r["record"]
-                    }
-                    st.rerun()
-            with bcol2:
-                if st.button("History", key=f"lh_{pid}", use_container_width=True):
-                    st.session_state.outreach_history_info = {"pid": pid, "name": pname}
-                    st.rerun()
+            _render_lunch(pid, pname, r["rec"], username, today)
 
         with ccol:
             st.markdown(
-                f'**Cookies:** {_badge(cookie_status, cookie_color)}',
+                '<p style="font-size:0.8em;font-weight:700;color:#ea580c;'
+                'margin:4px 0 2px 0;">COOKIES</p>',
                 unsafe_allow_html=True,
             )
-            if r["cookie_date"]:
-                st.caption(f"Status date: {_fmt_date(r['cookie_date'])}")
-            if r["cookie_note"]:
-                st.caption(f"Note: {r['cookie_note']}")
-            info_parts = []
-            if r["last_cookie"]:
-                info_parts.append(f"Last: {_fmt_date(r['last_cookie'])}")
-            if r["next_cookie"]:
-                nd = _fmt_date(r["next_cookie"])
-                label = f"Next due: **:red[{nd} OVERDUE]**" if cookie_overdue else f"Next due: {nd}"
-                info_parts.append(label)
-            if info_parts:
-                st.markdown("  |  ".join(info_parts))
-            bcol3, bcol4 = st.columns(2)
-            with bcol3:
-                if st.button("Update Cookies", key=f"uc_{pid}", use_container_width=True):
-                    st.session_state.outreach_cookie_info = {
-                        "pid": pid, "name": pname, "record": r["record"]
-                    }
-                    st.rerun()
-            with bcol4:
-                if st.button("History", key=f"ch_{pid}", use_container_width=True):
-                    st.session_state.outreach_history_info = {"pid": pid, "name": pname}
-                    st.rerun()
+            _render_cookie(pid, pname, r["rec"], username, today)
 
         st.divider()
+
+    # ── History dialog ─────────────────────────────────────────────────────────
+    hist = st.session_state.get("ol_history")
+    if hist:
+        h_pid, h_name = hist if isinstance(hist, tuple) else (hist, "Practice")
+        _history_dialog(h_pid, h_name)
