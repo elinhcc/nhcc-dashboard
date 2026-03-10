@@ -386,12 +386,13 @@ def main():
         from pages.user_management import show_user_management
         show_user_management()
 
-    # Render modal dialogs for contact/lunch/fax forms if active
+    # Render modal dialogs for contact/lunch/fax/delete forms if active
     try:
-        from pages.providers import render_contact_modal, render_lunch_modal, render_fax_modal
+        from pages.providers import render_contact_modal, render_lunch_modal, render_fax_modal, render_delete_modal
         render_contact_modal()
         render_lunch_modal()
         render_fax_modal()
+        render_delete_modal()
     except Exception:
         pass
 

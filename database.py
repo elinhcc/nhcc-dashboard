@@ -2368,3 +2368,195 @@ def ensure_default_admin():
         )
         conn.commit()
     conn.close()
+
+
+# ── Permanent Delete ───────────────────────────────────────────────────────────
+
+def delete_practice_permanently(practice_id: int) -> dict:
+    """Permanently delete a practice and all related records (full cascade).
+
+    Returns {'deleted': True, 'error': None} or {'deleted': False, 'error': str}.
+    """
+    supa = _supa()
+    try:
+        if supa:
+            supa.table("tasks").delete().eq("practice_id", practice_id).execute()
+            supa.table("events").delete().eq("practice_id", practice_id).execute()
+            supa.table("contact_log").delete().eq("practice_id", practice_id).execute()
+
+            provider_rows = (
+                supa.table("providers").select("id")
+                .eq("practice_id", practice_id).execute().data or []
+            )
+            for pr in provider_rows:
+                pid = pr["id"]
+                try:
+                    supa.table("provider_history").delete().eq("provider_id", pid).execute()
+                except Exception:
+                    pass
+                try:
+                    supa.table("provider_referrals").delete().eq("provider_id", pid).execute()
+                except Exception:
+                    pass
+            supa.table("providers").delete().eq("practice_id", practice_id).execute()
+
+            lunch_rows = (
+                supa.table("lunch_tracking").select("id")
+                .eq("practice_id", practice_id).execute().data or []
+            )
+            for lr in lunch_rows:
+                try:
+                    supa.table("call_attempts").delete().eq("lunch_id", lr["id"]).execute()
+                except Exception:
+                    pass
+            supa.table("lunch_tracking").delete().eq("practice_id", practice_id).execute()
+            try:
+                supa.table("call_attempts").delete().eq("practice_id", practice_id).execute()
+            except Exception:
+                pass
+
+            supa.table("cookie_visits").delete().eq("practice_id", practice_id).execute()
+            supa.table("thank_you_letters").delete().eq("practice_id", practice_id).execute()
+            supa.table("follow_ups").delete().eq("practice_id", practice_id).execute()
+            try:
+                supa.table("outreach_records").delete().eq("practice_id", practice_id).execute()
+            except Exception:
+                pass
+            try:
+                supa.table("outreach_history").delete().eq("practice_id", practice_id).execute()
+            except Exception:
+                pass
+            try:
+                supa.table("flyer_recipients").delete().eq("practice_id", practice_id).execute()
+            except Exception:
+                pass
+
+            supa.table("practices").delete().eq("id", practice_id).execute()
+
+        else:
+            conn = _sqlite()
+            try:
+                provider_rows = conn.execute(
+                    "SELECT id FROM providers WHERE practice_id=?", (practice_id,)
+                ).fetchall()
+                for pr in provider_rows:
+                    conn.execute("DELETE FROM provider_history WHERE provider_id=?", (pr[0],))
+                    try:
+                        conn.execute("DELETE FROM provider_referrals WHERE provider_id=?", (pr[0],))
+                    except Exception:
+                        pass
+                conn.execute("DELETE FROM providers WHERE practice_id=?", (practice_id,))
+
+                lunch_rows = conn.execute(
+                    "SELECT id FROM lunch_tracking WHERE practice_id=?", (practice_id,)
+                ).fetchall()
+                for lr in lunch_rows:
+                    conn.execute("DELETE FROM call_attempts WHERE lunch_id=?", (lr[0],))
+                conn.execute("DELETE FROM call_attempts WHERE practice_id=?", (practice_id,))
+                conn.execute("DELETE FROM lunch_tracking WHERE practice_id=?", (practice_id,))
+
+                conn.execute("DELETE FROM tasks WHERE practice_id=?", (practice_id,))
+                conn.execute("DELETE FROM events WHERE practice_id=?", (practice_id,))
+                conn.execute("DELETE FROM contact_log WHERE practice_id=?", (practice_id,))
+                conn.execute("DELETE FROM cookie_visits WHERE practice_id=?", (practice_id,))
+                conn.execute("DELETE FROM thank_you_letters WHERE practice_id=?", (practice_id,))
+                conn.execute("DELETE FROM follow_ups WHERE practice_id=?", (practice_id,))
+                try:
+                    conn.execute("DELETE FROM outreach_records WHERE practice_id=?", (practice_id,))
+                except Exception:
+                    pass
+                try:
+                    conn.execute("DELETE FROM outreach_history WHERE practice_id=?", (practice_id,))
+                except Exception:
+                    pass
+                try:
+                    conn.execute("DELETE FROM flyer_recipients WHERE practice_id=?", (practice_id,))
+                except Exception:
+                    pass
+
+                conn.execute("DELETE FROM practices WHERE id=?", (practice_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+        return {"deleted": True, "error": None}
+    except Exception as exc:
+        return {"deleted": False, "error": str(exc)}
+
+
+def find_empty_practices() -> list:
+    """Find practices suitable for bulk cleanup.
+
+    Returns practices where name is blank, a date string (YYYY-MM-DD), or only
+    digits — AND has no providers AND no contact_log entries.
+    """
+    import re
+    date_pattern = re.compile(r'^\d{4}-\d{2}-\d{2}')
+    number_pattern = re.compile(r'^\d+$')
+
+    supa = _supa()
+    if supa:
+        try:
+            all_practices = (
+                supa.table("practices").select("id,name,status").execute().data or []
+            )
+            has_providers = {
+                r["practice_id"] for r in
+                (supa.table("providers").select("practice_id").execute().data or [])
+                if r.get("practice_id")
+            }
+            has_contacts = {
+                r["practice_id"] for r in
+                (supa.table("contact_log").select("practice_id").execute().data or [])
+                if r.get("practice_id")
+            }
+        except Exception:
+            return []
+    else:
+        conn = _sqlite()
+        try:
+            all_practices = [
+                dict(r) for r in
+                conn.execute("SELECT id,name,status FROM practices").fetchall()
+            ]
+            has_providers = {
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT practice_id FROM providers WHERE practice_id IS NOT NULL"
+                ).fetchall()
+            }
+            has_contacts = {
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT practice_id FROM contact_log WHERE practice_id IS NOT NULL"
+                ).fetchall()
+            }
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+    empty = []
+    for p in all_practices:
+        name = (p.get("name") or "").strip()
+        pid = p["id"]
+        if pid in has_providers or pid in has_contacts:
+            continue
+        if not name or date_pattern.match(name) or number_pattern.match(name):
+            empty.append(p)
+    return empty
+
+
+def delete_empty_practices() -> dict:
+    """Delete all empty/invalid practices found by find_empty_practices().
+
+    Returns {'deleted_count': int, 'errors': list}.
+    """
+    empty = find_empty_practices()
+    deleted = 0
+    errors = []
+    for p in empty:
+        result = delete_practice_permanently(p["id"])
+        if result["deleted"]:
+            deleted += 1
+        else:
+            errors.append(f"{p.get('name') or p['id']}: {result['error']}")
+    return {"deleted_count": deleted, "errors": errors}

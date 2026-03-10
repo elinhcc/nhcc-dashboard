@@ -37,6 +37,44 @@ def _cb_open_lunch(practice_id):
     st.session_state.active_contact_form = None
     st.session_state.active_fax_form = None
 
+def _cb_open_delete(practice_id):
+    st.session_state.active_delete_form = practice_id
+
+
+@st.dialog("Delete Practice", width="small")
+def _delete_dialog(practice_id):
+    """Confirmation modal for permanently deleting a practice."""
+    from database import get_practice, delete_practice_permanently
+    practice = get_practice(practice_id)
+    if not practice:
+        st.error("Practice not found.")
+        return
+
+    pname = practice["name"]
+    st.error(f"**Permanently delete '{pname}'?**")
+    st.warning(
+        "This **cannot be undone**. All of the following will also be deleted:\n\n"
+        "- All contact log entries\n"
+        "- All tasks\n"
+        "- All calendar events\n"
+        "- All providers belonging to this practice\n"
+        "- All lunch & outreach records"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Yes, Delete Permanently", type="primary", use_container_width=True):
+            result = delete_practice_permanently(practice_id)
+            if result["deleted"]:
+                st.session_state.active_delete_form = None
+                st.rerun()
+            else:
+                st.error(f"Delete failed: {result['error']}")
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.active_delete_form = None
+            st.rerun()
+
 
 # ── ICS generation ────────────────────────────────────────────────────
 
@@ -625,6 +663,15 @@ def render_fax_modal():
         _fax_dialog(practice_id)
 
 
+def render_delete_modal():
+    """Check if a delete confirmation modal should be shown and render it."""
+    if not db_exists():
+        return
+    practice_id = st.session_state.get("active_delete_form")
+    if practice_id:
+        _delete_dialog(practice_id)
+
+
 # ── Referral Intelligence Helpers ─────────────────────────────────────
 
 _STAGE_COLORS = {
@@ -891,6 +938,21 @@ def _provider_detail_dialog(provider_id):
 def show_providers():
     st.markdown("## Provider & Practice Management")
 
+    # Red styling for the 7th-column delete buttons
+    st.markdown("""<style>
+[data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(7) button {
+    background-color: #dc3545 !important;
+    border-color: #b02a37 !important;
+    color: white !important;
+}
+[data-testid="stHorizontalBlock"] [data-testid="column"]:nth-child(7) button:hover {
+    background-color: #bb2d3b !important;
+    border-color: #b02a37 !important;
+}
+</style>""", unsafe_allow_html=True)
+
+    st.session_state.setdefault("active_delete_form", None)
+
     if not db_exists():
         st.text_input("Search practices", placeholder="Name, address, phone...", disabled=True)
         st.warning("No data loaded yet.")
@@ -1124,7 +1186,7 @@ def show_providers():
                 st.divider()
 
                 # Action buttons — use on_click callbacks to avoid session state errors
-                btn_col1, btn_col2, btn_col3, btn_col4, btn_col5, btn_col6 = st.columns(6)
+                btn_col1, btn_col2, btn_col3, btn_col4, btn_col5, btn_col6, btn_col7 = st.columns(7)
 
                 with btn_col1:
                     if st.button("✏️ Edit", key=f"edit_{practice['id']}"):
@@ -1170,6 +1232,15 @@ def show_providers():
                         update_practice(practice["id"], {"status": new_status})
                         st.success(f"Practice set to {new_status}")
                         st.rerun()
+
+                with btn_col7:
+                    st.button(
+                        "🗑️ Delete",
+                        key=f"delete_{practice['id']}",
+                        on_click=_cb_open_delete,
+                        args=(practice["id"],),
+                        help="Permanently delete this practice and all its records",
+                    )
 
                 # Edit form
                 if st.session_state.get(f"editing_{practice['id']}", False):

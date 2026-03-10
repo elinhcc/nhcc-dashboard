@@ -630,6 +630,57 @@ def show_settings():
             st.caption("Import data first.")
 
         st.markdown("---")
+        st.markdown("#### Delete Empty / Invalid Practices")
+        st.caption(
+            "Finds practices with no providers and no contact history whose name is blank, "
+            "a raw date (e.g. 2025-01-07), or only digits — and permanently deletes them."
+        )
+        if db_exists():
+            if st.button("Scan for Empty Practices", key="scan_empty_practices"):
+                with st.spinner("Scanning..."):
+                    from database import find_empty_practices
+                    empties = find_empty_practices()
+                st.session_state["empty_practices_preview"] = empties
+
+            preview = st.session_state.get("empty_practices_preview")
+            if preview is not None:
+                if not preview:
+                    st.success("No empty or invalid practices found.")
+                else:
+                    st.warning(f"Found **{len(preview)}** empty/invalid practice(s):")
+                    for p in preview[:20]:
+                        label = p.get("name") or "(blank)"
+                        st.caption(f"- ID {p['id']}: {label}  [{p.get('status', '')}]")
+                    if len(preview) > 20:
+                        st.caption(f"… and {len(preview) - 20} more")
+
+                    st.error("Delete all of these permanently? This cannot be undone.")
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        if st.button(
+                            f"Delete All {len(preview)} Empty Practices",
+                            type="primary",
+                            key="confirm_delete_empty",
+                        ):
+                            with st.spinner("Deleting..."):
+                                from database import delete_empty_practices
+                                result = delete_empty_practices()
+                            st.session_state["empty_practices_preview"] = None
+                            st.success(f"Deleted {result['deleted_count']} practice(s).")
+                            if result["errors"]:
+                                st.warning(
+                                    f"{len(result['errors'])} error(s):\n"
+                                    + "\n".join(f"- {e}" for e in result["errors"])
+                                )
+                            st.rerun()
+                    with dc2:
+                        if st.button("Cancel", key="cancel_delete_empty"):
+                            st.session_state["empty_practices_preview"] = None
+                            st.rerun()
+        else:
+            st.caption("Import data first to use this feature.")
+
+        st.markdown("---")
         st.markdown("#### Re-Import Fax Numbers")
         st.caption("Upload your Excel file to re-extract fax numbers and update Vonage emails without deleting other data.")
         reimport_fax_file = st.file_uploader(
