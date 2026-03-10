@@ -149,19 +149,31 @@ def relationship_score(practice_id):
     contacts = get_contact_log(practice_id=practice_id, limit=100)
     lunches = get_lunches(practice_id=practice_id)
     cookies = get_cookie_visits(practice_id=practice_id)
+    return _score_from_data(contacts, lunches, cookies)
 
+
+def relationship_score_from_bulk(practice_id, contacts_by_pid, lunches_by_pid, cookies_by_pid):
+    """Calculate relationship score using pre-fetched bulk data (no extra DB calls)."""
+    contacts = contacts_by_pid.get(practice_id, [])
+    lunches = lunches_by_pid.get(practice_id, [])
+    cookies = cookies_by_pid.get(practice_id, [])
+    return _score_from_data(contacts, lunches, cookies)
+
+
+def _score_from_data(contacts, lunches, cookies):
+    """Core scoring logic shared by both relationship_score variants."""
     score = 0
 
     # Recent contact bonus (within 30 days = +20, 60 = +10, 90 = +5)
     if contacts:
         most_recent = contacts[0].get("contact_date")
-        days = days_since(most_recent)
-        if days is not None:
-            if days <= 30:
+        d = days_since(most_recent)
+        if d is not None:
+            if d <= 30:
                 score += 20
-            elif days <= 60:
+            elif d <= 60:
                 score += 10
-            elif days <= 90:
+            elif d <= 90:
                 score += 5
 
     # Contact frequency (up to 30 points)
@@ -245,28 +257,43 @@ def format_fax_link(fax: str, vonage_domain: str = "fax.vonagebusiness.com") -> 
 
 
 def get_overdue_items():
-    """Get all overdue action items across all practices."""
-    from database import get_all_practices, get_contact_log, get_lunches, get_thank_yous
+    """Get all overdue action items across all practices using bulk queries."""
+    from database import get_contact_queue_data, get_thank_yous, get_lunches
     config = load_config()
     items = []
-    practices = get_all_practices(status_filter="Active")
+
+    # 3 bulk calls instead of 275×3 individual calls
+    practices, last_contact_by_pid, _, _ = get_contact_queue_data()
+
+    # Bulk fetch pending thank yous and scheduled lunches
+    all_pending_ty = get_thank_yous(status_filter="Pending")
+    ty_by_pid = {}
+    for ty in all_pending_ty:
+        pid = ty.get("practice_id")
+        if pid:
+            ty_by_pid.setdefault(pid, []).append(ty)
+
+    all_sched_lunches = get_lunches(status_filter="Scheduled")
+    sched_lunches_by_pid = {}
+    for l in all_sched_lunches:
+        pid = l.get("practice_id")
+        if pid:
+            sched_lunches_by_pid.setdefault(pid, []).append(l)
 
     for practice in practices:
         pid = practice["id"]
 
-        # Check last contact date
-        contacts = get_contact_log(practice_id=pid, limit=1)
-        if contacts:
-            last_date = contacts[0].get("contact_date")
-            days = days_since(last_date)
-            if days and days > config["reminder_days"]["lunch_followup"]:
+        last_contact = last_contact_by_pid.get(pid)
+        if last_contact:
+            d = days_since(last_contact.get("contact_date"))
+            if d and d > config["reminder_days"]["lunch_followup"]:
                 items.append({
                     "type": "Follow-up Overdue",
                     "practice": practice["name"],
                     "practice_id": pid,
-                    "detail": f"Last contact was {days} days ago",
-                    "days_overdue": days - config["reminder_days"]["lunch_followup"],
-                    "priority": "high" if days > 120 else "medium",
+                    "detail": f"Last contact was {d} days ago",
+                    "days_overdue": d - config["reminder_days"]["lunch_followup"],
+                    "priority": "high" if d > 120 else "medium",
                 })
         else:
             items.append({
@@ -278,32 +305,28 @@ def get_overdue_items():
                 "priority": "high",
             })
 
-        # Pending thank you letters
-        pending_ty = get_thank_yous(practice_id=pid, status_filter="Pending")
-        for ty in pending_ty:
-            days = days_since(ty.get("created_at"))
-            if days and days > 7:
+        for ty in ty_by_pid.get(pid, []):
+            d = days_since(ty.get("created_at"))
+            if d and d > 7:
                 items.append({
                     "type": "Thank You Letter",
                     "practice": practice["name"],
                     "practice_id": pid,
-                    "detail": f"Pending for {days} days ({ty.get('reason', '')})",
-                    "days_overdue": days - 7,
+                    "detail": f"Pending for {d} days ({ty.get('reason', '')})",
+                    "days_overdue": d - 7,
                     "priority": "medium",
                 })
 
-        # Scheduled lunches approaching
-        lunches = get_lunches(practice_id=pid, status_filter="Scheduled")
-        for lunch in lunches:
+        for lunch in sched_lunches_by_pid.get(pid, []):
             if lunch.get("scheduled_date"):
-                days = days_since(lunch["scheduled_date"])
-                if days is not None and days < 0:
+                d = days_since(lunch["scheduled_date"])
+                if d is not None and d < 0:
                     items.append({
                         "type": "Upcoming Lunch",
                         "practice": practice["name"],
                         "practice_id": pid,
-                        "detail": f"Lunch in {abs(days)} days - {lunch.get('scheduled_time', '')}",
-                        "days_overdue": days,
+                        "detail": f"Lunch in {abs(d)} days - {lunch.get('scheduled_time', '')}",
+                        "days_overdue": d,
                         "priority": "medium",
                     })
 

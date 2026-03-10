@@ -1,3 +1,10 @@
+[server]
+maxUploadSize = 10
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
+
 [client]
 showSidebarNavigation = false
 

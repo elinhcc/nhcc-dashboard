@@ -220,25 +220,23 @@ def _show_add_task_form(team_members, username, is_admin):
 
 
 def _show_contact_queue():
-    from database import get_all_practices, get_contact_log, get_lunches, get_call_attempt_count
+    from database import get_contact_queue_data
     from utils import format_phone_link
 
-    practices = get_all_practices(status_filter="Active")
+    # 3 bulk calls instead of 275×3 individual calls
+    practices, last_contact_by_pid, lunch_active_pids, phone_count_by_pid = get_contact_queue_data()
     queue = []
 
     for p in practices:
-        contacts   = get_contact_log(practice_id=p["id"], limit=5)
-        lunches    = get_lunches(practice_id=p["id"])
-        call_count = get_call_attempt_count(p["id"])
+        pid = p["id"]
+        last = last_contact_by_pid.get(pid)
+        call_count = phone_count_by_pid.get(pid, 0)
+        has_lunch = pid in lunch_active_pids
 
-        has_contact = bool(contacts)
-        has_lunch   = any(l.get("status") in ("Scheduled", "Completed") for l in lunches)
-
-        if has_contact and not has_lunch and call_count > 0:
-            last = contacts[0]
+        if last and not has_lunch and call_count > 0:
             queue.append({
                 "practice":          p["name"],
-                "practice_id":       p["id"],
+                "practice_id":       pid,
                 "last_contact_date": (last.get("contact_date") or "")[:10],
                 "last_contact_type": last.get("contact_type", ""),
                 "attempt_count":     call_count,

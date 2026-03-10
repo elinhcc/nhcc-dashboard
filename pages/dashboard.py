@@ -3,13 +3,56 @@ import streamlit as st
 from utils import db_exists
 
 
+@st.cache_data(ttl=60)
+def _cached_tasks(is_complete, assigned_to=None):
+    from database import get_tasks
+    if assigned_to:
+        return get_tasks(is_complete=is_complete, assigned_to=assigned_to)
+    return get_tasks(is_complete=is_complete)
+
+
+@st.cache_data(ttl=60)
+def _cached_contact_queue_data():
+    from database import get_contact_queue_data
+    return get_contact_queue_data()
+
+
+@st.cache_data(ttl=60)
+def _cached_dashboard_stats():
+    from database import get_dashboard_stats
+    return get_dashboard_stats()
+
+
+@st.cache_data(ttl=300)
+def _cached_practices(status_filter=None):
+    from database import get_all_practices
+    return get_all_practices(status_filter=status_filter)
+
+
+@st.cache_data(ttl=300)
+def _cached_providers_by_practice():
+    from database import get_all_providers_by_practice
+    return get_all_providers_by_practice()
+
+
+@st.cache_data(ttl=120)
+def _cached_relationship_bulk():
+    from database import get_relationship_bulk_data
+    return get_relationship_bulk_data()
+
+
+@st.cache_data(ttl=120)
+def _cached_overdue_items():
+    from utils import get_overdue_items
+    return get_overdue_items()
+
+
 def show_dashboard():
     st.markdown("## Provider Outreach Dashboard")
 
     # ── Morning summary card ───────────────────────────────────────────
     try:
         if db_exists():
-            from database import get_tasks, get_all_practices, get_contact_log, get_lunches, get_call_attempt_count
             from datetime import date, datetime
 
             user_dict = st.session_state.get("user", {})
@@ -22,10 +65,11 @@ def show_dashboard():
 
             today_str = date.today().isoformat()
 
+            # 1 call for tasks instead of filtering after fetch
             if is_admin:
-                open_tasks = get_tasks(is_complete=False)
+                open_tasks = _cached_tasks(is_complete=False)
             else:
-                open_tasks = get_tasks(is_complete=False, assigned_to=username)
+                open_tasks = _cached_tasks(is_complete=False, assigned_to=username)
 
             overdue_count = sum(
                 1 for t in open_tasks
@@ -33,16 +77,14 @@ def show_dashboard():
             )
             today_count = sum(1 for t in open_tasks if t.get("due_date") == today_str)
 
-            # Count practices in contact queue (attempted but no lunch)
-            practices   = get_all_practices(status_filter="Active")
-            queue_count = 0
-            for p in practices:
-                contacts   = get_contact_log(practice_id=p["id"], limit=1)
-                lunches    = get_lunches(practice_id=p["id"])
-                call_count = get_call_attempt_count(p["id"])
-                has_lunch  = any(l.get("status") in ("Scheduled", "Completed") for l in lunches)
-                if contacts and not has_lunch and call_count > 0:
-                    queue_count += 1
+            # Bulk contact queue data: 3 calls total instead of 275×3
+            practices_cq, last_contact_by_pid, lunch_active_pids, phone_count_by_pid = _cached_contact_queue_data()
+            queue_count = sum(
+                1 for p in practices_cq
+                if last_contact_by_pid.get(p["id"])
+                and p["id"] not in lunch_active_pids
+                and phone_count_by_pid.get(p["id"], 0) > 0
+            )
 
             with st.container(border=True):
                 st.markdown(f"**{greeting} {name}! Here's your day:**")
@@ -73,11 +115,10 @@ def show_dashboard():
         return
 
     try:
-        from database import get_dashboard_stats, get_all_practices, get_providers_for_practice
-        from utils import relationship_score, score_color, score_label, get_overdue_items, format_phone_link
+        from utils import score_color, score_label, format_phone_link, relationship_score_from_bulk
 
-        # Top stats row
-        stats = get_dashboard_stats()
+        # Top stats row — single cached call
+        stats = _cached_dashboard_stats()
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("Active Practices", stats["total_practices"])
         c2.metric("Active Providers", stats["total_providers"])
@@ -104,9 +145,9 @@ def show_dashboard():
 
         st.markdown("---")
 
-        # Overdue items alert
+        # Overdue items alert — uses bulk queries internally
         try:
-            overdue = get_overdue_items()
+            overdue = _cached_overdue_items()
             high_priority = [i for i in overdue if i.get("priority") == "high"]
             if high_priority:
                 with st.expander(f"Warning: {len(high_priority)} High Priority Items", expanded=True):
@@ -115,7 +156,12 @@ def show_dashboard():
         except Exception:
             pass
 
-        # Location tabs
+        # Load bulk data once for all provider cards — 3 calls total
+        contacts_by_pid, lunches_by_pid, cookies_by_pid = _cached_relationship_bulk()
+        providers_by_practice = _cached_providers_by_practice()
+
+        # Location tabs — load practices ONCE (not 3 times)
+        practices = _cached_practices(status_filter="Active")
         tab_h, tab_w, tab_o = st.tabs([
             f"Huntsville ({stats['huntsville_practices']})",
             f"Woodlands ({stats['woodlands_practices']})",
@@ -124,7 +170,6 @@ def show_dashboard():
 
         for tab, category in [(tab_h, "Huntsville"), (tab_w, "Woodlands"), (tab_o, "Other")]:
             with tab:
-                practices = get_all_practices(status_filter="Active")
                 filtered = [p for p in practices if p.get("location_category") == category]
 
                 if not filtered:
@@ -137,14 +182,16 @@ def show_dashboard():
                     search_lower = search.lower()
                     filtered = [p for p in filtered if search_lower in p["name"].lower() or search_lower in (p.get("address") or "").lower()]
 
-                # Provider cards grid
+                # Provider cards grid — no per-practice DB calls
                 cols = st.columns(3)
                 for i, practice in enumerate(filtered):
                     with cols[i % 3]:
-                        score = relationship_score(practice["id"])
+                        score = relationship_score_from_bulk(
+                            practice["id"], contacts_by_pid, lunches_by_pid, cookies_by_pid
+                        )
                         color = score_color(score)
                         label = score_label(score)
-                        providers = get_providers_for_practice(practice["id"])
+                        providers = providers_by_practice.get(practice["id"], [])
 
                         phone_html = format_phone_link(practice.get('phone', ''))
                         st.markdown(f"""

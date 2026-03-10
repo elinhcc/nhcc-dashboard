@@ -1543,6 +1543,146 @@ def get_open_task_counts() -> dict:
         return {}
 
 
+# ── Bulk Helpers (performance optimization) ───────────────────────────────────
+
+def get_contact_queue_data():
+    """Fetch all data needed for the contact queue in 3 bulk queries instead of 3×N.
+
+    Returns:
+        (practices, last_contact_by_pid, lunch_active_pids, phone_count_by_pid)
+        - practices: list of Active practice dicts (id, name, phone, address)
+        - last_contact_by_pid: {practice_id: last_contact_dict}
+        - lunch_active_pids: set of practice_ids with Scheduled/Completed lunch
+        - phone_count_by_pid: {practice_id: int}
+    """
+    from collections import defaultdict
+    supa = _supa()
+    if supa:
+        try:
+            practices = (supa.table("practices").select("id,name,phone,address")
+                         .eq("status", "Active").order("name").execute().data or [])
+            contacts = (supa.table("contact_log")
+                        .select("practice_id,contact_type,contact_date,outcome")
+                        .order("contact_date", desc=True).execute().data or [])
+            lunches = (supa.table("lunch_tracking")
+                       .select("practice_id,status").execute().data or [])
+        except Exception:
+            return [], {}, set(), {}
+    else:
+        conn = _sqlite()
+        try:
+            practices = [dict(r) for r in conn.execute(
+                "SELECT id,name,phone,address FROM practices WHERE status='Active' ORDER BY name"
+            ).fetchall()]
+            contacts = [dict(r) for r in conn.execute(
+                "SELECT practice_id,contact_type,contact_date,outcome FROM contact_log ORDER BY contact_date DESC"
+            ).fetchall()]
+            lunches = [dict(r) for r in conn.execute(
+                "SELECT practice_id,status FROM lunch_tracking"
+            ).fetchall()]
+        except Exception:
+            practices, contacts, lunches = [], [], []
+        finally:
+            conn.close()
+
+    last_contact_by_pid = {}
+    phone_count_by_pid = defaultdict(int)
+    for c in contacts:
+        pid = c.get("practice_id")
+        if pid is None:
+            continue
+        if pid not in last_contact_by_pid:
+            last_contact_by_pid[pid] = c
+        if c.get("contact_type") == "Phone Call":
+            phone_count_by_pid[pid] += 1
+
+    lunch_active_pids = {
+        l["practice_id"] for l in lunches
+        if l.get("status") in ("Scheduled", "Completed")
+    }
+
+    return practices, last_contact_by_pid, lunch_active_pids, dict(phone_count_by_pid)
+
+
+def get_relationship_bulk_data():
+    """Fetch all data needed for relationship scoring in 3 bulk queries.
+
+    Returns:
+        (contacts_by_pid, lunches_by_pid, cookies_by_pid)
+        Each is a defaultdict(list) keyed by practice_id.
+    """
+    from collections import defaultdict
+    supa = _supa()
+    if supa:
+        try:
+            contacts = (supa.table("contact_log")
+                        .select("practice_id,contact_type,contact_date")
+                        .order("contact_date", desc=True).execute().data or [])
+            lunches = (supa.table("lunch_tracking")
+                       .select("practice_id,status").execute().data or [])
+            cookies = (supa.table("cookie_visits")
+                       .select("practice_id,visit_date").execute().data or [])
+        except Exception:
+            contacts, lunches, cookies = [], [], []
+    else:
+        conn = _sqlite()
+        try:
+            contacts = [dict(r) for r in conn.execute(
+                "SELECT practice_id,contact_type,contact_date FROM contact_log ORDER BY contact_date DESC"
+            ).fetchall()]
+            lunches = [dict(r) for r in conn.execute(
+                "SELECT practice_id,status FROM lunch_tracking"
+            ).fetchall()]
+            cookies = [dict(r) for r in conn.execute(
+                "SELECT practice_id,visit_date FROM cookie_visits"
+            ).fetchall()]
+        except Exception:
+            contacts, lunches, cookies = [], [], []
+        finally:
+            conn.close()
+
+    contacts_by_pid = defaultdict(list)
+    for c in contacts:
+        contacts_by_pid[c["practice_id"]].append(c)
+
+    lunches_by_pid = defaultdict(list)
+    for l in lunches:
+        lunches_by_pid[l["practice_id"]].append(l)
+
+    cookies_by_pid = defaultdict(list)
+    for cv in cookies:
+        cookies_by_pid[cv["practice_id"]].append(cv)
+
+    return contacts_by_pid, lunches_by_pid, cookies_by_pid
+
+
+def get_all_providers_by_practice():
+    """Return {practice_id: [provider_dicts]} — one DB call for all practices."""
+    from collections import defaultdict
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("providers").select("id,practice_id,name,status")
+                    .order("name").execute().data or [])
+        except Exception:
+            rows = []
+    else:
+        conn = _sqlite()
+        try:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT id,practice_id,name,status FROM providers ORDER BY name"
+            ).fetchall()]
+        except Exception:
+            rows = []
+        finally:
+            conn.close()
+
+    by_practice = defaultdict(list)
+    for p in rows:
+        by_practice[p["practice_id"]].append(p)
+    return dict(by_practice)
+
+
 def get_practices_with_new_referrers():
     """Return set of practice_ids that have at least one provider with is_new_referrer=1."""
     supa = _supa()
