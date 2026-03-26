@@ -180,11 +180,16 @@ def _show_add_task_form(team_members, username, is_admin):
     from database import get_all_practices, add_task
 
     practices  = get_all_practices(status_filter="Active")
-    prac_names = [p["name"] for p in practices]
-    prac_map   = {p["name"]: p["id"] for p in practices}
+    # Build map of name → id, skipping any rows without a valid id
+    prac_map   = {p["name"]: p["id"] for p in practices if p.get("id")}
+    prac_names = list(prac_map.keys())
+
+    if not prac_names:
+        st.warning("No active practices found. Please import practice data before creating tasks.")
+        return
 
     with st.form("add_task_form", clear_on_submit=True):
-        selected_practice = st.selectbox("Practice *", prac_names) if prac_names else None
+        selected_practice = st.selectbox("Practice *", prac_names)
         task_type = st.selectbox("Task Type *", [
             "Follow-up Call", "Catering Order", "Confirmation Email",
             "Schedule Lunch", "Follow-up Visit", "General",
@@ -203,20 +208,27 @@ def _show_add_task_form(team_members, username, is_admin):
                 st.text(f"Assigned to: {username}")
 
         if st.form_submit_button("Add Task", type="primary"):
-            if not selected_practice:
-                st.error("Please select a practice.")
+            practice_id = prac_map.get(selected_practice)
+            if not practice_id:
+                st.error(
+                    f"Could not find an ID for '{selected_practice}'. "
+                    "Please refresh the page and try again."
+                )
             else:
-                add_task({
-                    "practice_id": prac_map[selected_practice],
-                    "task_type":   task_type,
-                    "description": description.strip(),
-                    "due_date":    due_date.isoformat(),
-                    "assigned_to": assigned_to,
-                    "is_complete": 0,
-                    "created_at":  datetime.now().isoformat(),
-                })
-                st.success("Task added!")
-                st.rerun()
+                try:
+                    add_task({
+                        "practice_id": practice_id,
+                        "task_type":   task_type,
+                        "description": description.strip() or None,
+                        "due_date":    due_date.isoformat(),
+                        "assigned_to": assigned_to,
+                        "is_complete": 0,
+                        "created_at":  datetime.now().isoformat(),
+                    })
+                    st.success("Task added!")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to save task: {exc}")
 
 
 def _compute_urgency(last_date_str, call_count, open_tasks, today_str, in_3d_str):

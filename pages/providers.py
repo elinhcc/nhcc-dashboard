@@ -312,47 +312,40 @@ def _contact_dialog(practice_id):
                 # Auto-create follow-up tasks based on outcome
                 _today = contact_date
                 try:
+                    _base = {
+                        "practice_id": practice_id,
+                        "assigned_to": team_member,
+                        "is_complete": 0,
+                        "created_at":  datetime.now().isoformat(),
+                    }
                     if is_phone and phone_sub_type == "Left Voicemail":
-                        _due = _add_business_days(_today, 2).isoformat()
-                        add_task({
-                            "practice_id": practice_id,
-                            "task_type": "Follow-up Call",
+                        add_task({**_base,
+                            "task_type":   "Follow-up Call",
                             "description": f"Follow-up call to {practice['name']} (attempt #{call_count + 2})",
-                            "due_date": _due,
-                            "assigned_to": team_member,
+                            "due_date":    _add_business_days(_today, 2).isoformat(),
                         })
                     elif is_phone and phone_sub_type == "No Answer":
-                        _due = _add_business_days(_today, 1).isoformat()
-                        add_task({
-                            "practice_id": practice_id,
-                            "task_type": "Follow-up Call",
+                        add_task({**_base,
+                            "task_type":   "Follow-up Call",
                             "description": f"Follow-up call to {practice['name']} — no answer (attempt #{call_count + 2})",
-                            "due_date": _due,
-                            "assigned_to": team_member,
+                            "due_date":    _add_business_days(_today, 1).isoformat(),
                         })
                     elif is_phone and phone_sub_type == "Spoke with someone" and outcome == "Scheduled lunch":
-                        add_task({
-                            "practice_id": practice_id,
-                            "task_type": "Catering",
+                        add_task({**_base,
+                            "task_type":   "Catering",
                             "description": f"Order catering for {practice['name']} lunch",
-                            "due_date": _add_business_days(_today, 3).isoformat(),
-                            "assigned_to": team_member,
+                            "due_date":    _add_business_days(_today, 3).isoformat(),
                         })
-                        add_task({
-                            "practice_id": practice_id,
-                            "task_type": "Confirmation Email",
+                        add_task({**_base,
+                            "task_type":   "Confirmation Email",
                             "description": f"Send confirmation email to {practice['name']}",
-                            "due_date": _add_business_days(_today, 1).isoformat(),
-                            "assigned_to": team_member,
+                            "due_date":    _add_business_days(_today, 1).isoformat(),
                         })
                     elif effective_outcome in ("Interested", "Will call back", "Follow-up Needed"):
-                        _due = _add_business_days(_today, 3).isoformat()
-                        add_task({
-                            "practice_id": practice_id,
-                            "task_type": "Follow-up",
+                        add_task({**_base,
+                            "task_type":   "Follow-up",
                             "description": f"Follow up with {practice['name']} — {effective_outcome}",
-                            "due_date": _due,
-                            "assigned_to": team_member,
+                            "due_date":    _add_business_days(_today, 3).isoformat(),
                         })
                 except Exception:
                     pass  # Don't block contact log on task creation failure

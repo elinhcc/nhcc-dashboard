@@ -256,20 +256,24 @@ def _show_alerts():
                 with c2:
                     if st.button("Create Tasks", key=f"alert_tasks_{a['practice_id']}", type="primary"):
                         today = date.today()
-                        for task_type, desc in [
-                            ("Send Thank You Letter", f"Send thank you to {a['practice']}"),
-                            ("Send Intro Package",    f"Send introductory package to {a['practice']}"),
-                            ("Schedule Lunch",        f"Schedule lunch with {a['practice']}"),
-                        ]:
-                            add_task({
-                                "practice_id": a["practice_id"],
-                                "task_type":   task_type,
-                                "description": desc,
-                                "due_date":    (today + timedelta(days=3)).isoformat(),
-                                "is_complete": 0,
-                            })
-                        st.success("Tasks created!")
-                        st.rerun()
+                        try:
+                            for task_type, desc in [
+                                ("Send Thank You Letter", f"Send thank you to {a['practice']}"),
+                                ("Send Intro Package",    f"Send introductory package to {a['practice']}"),
+                                ("Schedule Lunch",        f"Schedule lunch with {a['practice']}"),
+                            ]:
+                                add_task({
+                                    "practice_id": a["practice_id"],
+                                    "task_type":   task_type,
+                                    "description": desc,
+                                    "due_date":    (today + timedelta(days=3)).isoformat(),
+                                    "is_complete": 0,
+                                    "created_at":  datetime.now().isoformat(),
+                                })
+                            st.success("Tasks created!")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Failed to create tasks: {exc}")
 
     if red:
         st.markdown("#### 🔴 Referral Drops")
@@ -282,15 +286,19 @@ def _show_alerts():
                     st.caption(f"**Action:** {a['action']}")
                 with c2:
                     if st.button("Create Call Task", key=f"alert_call_{a['practice_id']}"):
-                        add_task({
-                            "practice_id": a["practice_id"],
-                            "task_type":   "Courtesy Call",
-                            "description": f"Courtesy call — referral drop at {a['practice']}",
-                            "due_date":    date.today().isoformat(),
-                            "is_complete": 0,
-                        })
-                        st.success("Courtesy call task created!")
-                        st.rerun()
+                        try:
+                            add_task({
+                                "practice_id": a["practice_id"],
+                                "task_type":   "Courtesy Call",
+                                "description": f"Courtesy call — referral drop at {a['practice']}",
+                                "due_date":    date.today().isoformat(),
+                                "is_complete": 0,
+                                "created_at":  datetime.now().isoformat(),
+                            })
+                            st.success("Courtesy call task created!")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Failed to create task: {exc}")
 
     if yellow:
         st.markdown("#### 🟡 Aging New Leads (5+ months, no referrals)")

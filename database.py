@@ -1415,21 +1415,40 @@ def _add_business_days(start_date, days: int):
 
 
 def add_task(data: dict) -> int:
+    """Insert a task row.  Raises ValueError if required fields are missing."""
+    practice_id = data.get("practice_id")
+    if not practice_id:
+        raise ValueError(
+            "add_task: practice_id is required and cannot be null or zero. "
+            f"Received data keys: {list(data.keys())}"
+        )
+    task_type = data.get("task_type") or ""
+    if not task_type.strip():
+        raise ValueError("add_task: task_type is required and cannot be empty.")
+
+    # Strip keys whose value is None so Supabase/SQLite use column defaults
+    clean = {k: v for k, v in data.items() if v is not None}
+    # Supabase expects boolean for is_complete; SQLite uses 0/1
     supa = _supa()
     if supa:
-        d = dict(data)
-        if "is_complete" in d:
-            d["is_complete"] = bool(d["is_complete"])
-        result = supa.table("tasks").insert(d).execute()
-        return result.data[0]["id"]
+        d = dict(clean)
+        d["is_complete"] = bool(d.get("is_complete", False))
+        try:
+            result = supa.table("tasks").insert(d).execute()
+            return result.data[0]["id"]
+        except Exception as exc:
+            raise RuntimeError(f"add_task Supabase insert failed: {exc}") from exc
     conn = _sqlite()
-    cols = ", ".join(data.keys())
-    placeholders = ", ".join(["?"] * len(data))
-    cur = conn.execute(f"INSERT INTO tasks ({cols}) VALUES ({placeholders})", list(data.values()))
-    conn.commit()
-    tid = cur.lastrowid
-    conn.close()
-    return tid
+    try:
+        cols = ", ".join(clean.keys())
+        placeholders = ", ".join(["?"] * len(clean))
+        cur = conn.execute(
+            f"INSERT INTO tasks ({cols}) VALUES ({placeholders})", list(clean.values())
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
 
 
 def get_tasks(practice_id=None, is_complete=None, due_before=None, assigned_to=None):
