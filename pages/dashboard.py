@@ -47,6 +47,12 @@ def _cached_overdue_items():
     return get_overdue_items()
 
 
+@st.cache_data(ttl=120)
+def _cached_referral_stats():
+    from database import get_referral_dashboard_stats
+    return get_referral_dashboard_stats()
+
+
 def show_dashboard():
     st.markdown("## Provider Outreach Dashboard")
 
@@ -142,6 +148,23 @@ def show_dashboard():
         with c11:
             needs_attn = stats.get("needs_attention", 0)
             st.metric("Needs Attention", needs_attn)
+
+        # Referral pipeline row
+        try:
+            ref_stats = _cached_referral_stats()
+            cr1, cr2, cr3, cr4 = st.columns(4)
+            cr1.metric("Referrals This Month",    ref_stats.get("referrals_this_month", 0))
+            cr2.metric("New Referrers (Month)",   ref_stats.get("new_referrers_this_month", 0))
+            cr3.metric("Actively Referring",      ref_stats.get("pipeline_referring", 0))
+            drops = ref_stats.get("referral_drops", 0)
+            cr4.metric(
+                "⚠️ Referral Drops" if drops else "Referral Drops",
+                drops,
+                delta=f"-{drops} need attention" if drops else None,
+                delta_color="inverse" if drops else "normal",
+            )
+        except Exception:
+            pass
 
         st.markdown("---")
 

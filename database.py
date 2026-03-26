@@ -325,6 +325,17 @@ def init_db():
         FOREIGN KEY (provider_id) REFERENCES providers(id),
         FOREIGN KEY (practice_id) REFERENCES practices(id)
     );
+    CREATE TABLE IF NOT EXISTS referral_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        practice_id INTEGER NOT NULL,
+        week_ending_date DATE NOT NULL,
+        referral_count INTEGER NOT NULL DEFAULT 0,
+        service_line TEXT,
+        notes TEXT,
+        logged_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (practice_id) REFERENCES practices(id)
+    );
     """)
     _migrate_column(c, "contact_log", "purpose", "TEXT")
     _migrate_column(c, "contact_log", "call_attempt_number", "INTEGER")
@@ -347,6 +358,10 @@ def init_db():
     _migrate_column(c, "providers", "thank_you_sent", "INTEGER DEFAULT 0")
     _migrate_column(c, "providers", "intro_folder_sent", "INTEGER DEFAULT 0")
     _migrate_column(c, "providers", "business_card_sent", "INTEGER DEFAULT 0")
+    _migrate_column(c, "practices", "pipeline_stage", "TEXT DEFAULT 'New Lead'")
+    _migrate_column(c, "practices", "first_referral_date", "DATE")
+    _migrate_column(c, "practices", "last_referral_date", "DATE")
+    _migrate_column(c, "practices", "total_referrals", "INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -633,6 +648,372 @@ def get_contact_log_by_date(start_date: str, end_date: str, limit: int = 2000):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Referral Log (practice-level weekly counts) ────────────────────────────────
+
+def add_referral_log(data: dict) -> int:
+    """Insert a referral_log entry and refresh the practice's referral summary.
+
+    On the practice's first-ever referral: auto-updates pipeline_stage to 'Referring'
+    and creates thank-you / intro-package / schedule-lunch tasks.
+    Returns the new row id.
+    """
+    data = dict(data)
+    data.setdefault("created_at", datetime.now().isoformat())
+    practice_id = data.get("practice_id")
+
+    supa = _supa()
+    if supa:
+        try:
+            result = supa.table("referral_log").insert(data).execute()
+            rid = result.data[0]["id"]
+        except Exception:
+            rid = 0
+    else:
+        conn = _sqlite()
+        try:
+            cols = ", ".join(data.keys())
+            placeholders = ", ".join(["?"] * len(data))
+            cur = conn.execute(
+                f"INSERT INTO referral_log ({cols}) VALUES ({placeholders})",
+                list(data.values()),
+            )
+            conn.commit()
+            rid = cur.lastrowid
+        except Exception:
+            rid = 0
+        finally:
+            conn.close()
+
+    if practice_id:
+        _refresh_practice_referral_stats(practice_id, data.get("logged_by", ""))
+    return rid
+
+
+def _refresh_practice_referral_stats(practice_id: int, logged_by: str = ""):
+    """Recompute practice total_referrals, first/last dates; advance stage on first referral."""
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("referral_log")
+                    .select("week_ending_date,referral_count")
+                    .eq("practice_id", practice_id)
+                    .order("week_ending_date")
+                    .execute().data or [])
+        except Exception:
+            return
+    else:
+        conn = _sqlite()
+        try:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT week_ending_date, referral_count FROM referral_log "
+                "WHERE practice_id=? ORDER BY week_ending_date",
+                (practice_id,),
+            ).fetchall()]
+        except Exception:
+            rows = []
+        finally:
+            conn.close()
+
+    if not rows:
+        return
+
+    total      = sum(r.get("referral_count") or 0 for r in rows)
+    first_date = rows[0].get("week_ending_date") if rows else None
+    last_date  = rows[-1].get("week_ending_date") if rows else None
+    is_first   = len(rows) == 1
+
+    update_data: dict = {
+        "total_referrals":     total,
+        "first_referral_date": first_date,
+        "last_referral_date":  last_date,
+    }
+    if is_first:
+        update_data["pipeline_stage"] = "Referring"
+
+    supa = _supa()
+    if supa:
+        try:
+            supa.table("practices").update(update_data).eq("id", practice_id).execute()
+        except Exception:
+            pass
+    else:
+        conn = _sqlite()
+        try:
+            sets = ", ".join(f"{k}=?" for k in update_data)
+            conn.execute(
+                f"UPDATE practices SET {sets} WHERE id=?",
+                list(update_data.values()) + [practice_id],
+            )
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    if is_first:
+        try:
+            from datetime import date as _d, timedelta as _td
+            today = _d.today()
+            for task_type, desc in [
+                ("Send Thank You Letter",  f"Send thank you letter to new referring practice (#{practice_id})"),
+                ("Send Intro Package",     f"Send introductory folder to new referring practice (#{practice_id})"),
+                ("Schedule Lunch",         f"Schedule lunch with new referring practice (#{practice_id})"),
+            ]:
+                add_task({
+                    "practice_id": practice_id,
+                    "task_type":   task_type,
+                    "description": desc,
+                    "due_date":    (today + _td(days=3)).isoformat(),
+                    "assigned_to": logged_by or "",
+                    "is_complete": 0,
+                    "created_at":  datetime.now().isoformat(),
+                })
+        except Exception:
+            pass
+
+
+def get_referral_log(practice_id=None, start_date=None, end_date=None, limit=1000):
+    """Fetch referral_log rows, optionally filtered by practice and/or date range."""
+    supa = _supa()
+    if supa:
+        try:
+            q = (supa.table("referral_log")
+                 .select("*, practices(name)")
+                 .order("week_ending_date", desc=True)
+                 .limit(limit))
+            if practice_id:
+                q = q.eq("practice_id", practice_id)
+            if start_date:
+                q = q.gte("week_ending_date", start_date)
+            if end_date:
+                q = q.lte("week_ending_date", end_date)
+            rows = q.execute().data or []
+            for row in rows:
+                _pop_embed(row, "practices", "practice_name")
+            return rows
+        except Exception:
+            return []
+
+    conn = _sqlite()
+    try:
+        clauses, params = [], []
+        if practice_id:
+            clauses.append("rl.practice_id=?"); params.append(practice_id)
+        if start_date:
+            clauses.append("rl.week_ending_date>=?"); params.append(start_date)
+        if end_date:
+            clauses.append("rl.week_ending_date<=?"); params.append(end_date)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT rl.*, pr.name AS practice_name FROM referral_log rl "
+            f"JOIN practices pr ON rl.practice_id=pr.id "
+            f"{where} ORDER BY rl.week_ending_date DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def get_pipeline_overview() -> dict:
+    """Return {stage: count} for all Active practices."""
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("practices")
+                    .select("pipeline_stage")
+                    .eq("status", "Active")
+                    .execute().data or [])
+            counts: dict = {}
+            for r in rows:
+                s = r.get("pipeline_stage") or "New Lead"
+                counts[s] = counts.get(s, 0) + 1
+            return counts
+        except Exception:
+            return {}
+
+    conn = _sqlite()
+    try:
+        rows = conn.execute(
+            "SELECT COALESCE(pipeline_stage,'New Lead') AS stage, COUNT(*) AS cnt "
+            "FROM practices WHERE status='Active' GROUP BY stage"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def get_referral_alerts() -> list:
+    """Return list of alert dicts: new_referrer, referral_drop, six_month_lead."""
+    import datetime as _dt
+    today = _dt.date.today()
+    d30   = (today - _dt.timedelta(days=30)).isoformat()
+    d150  = (today - _dt.timedelta(days=150)).isoformat()
+
+    supa = _supa()
+    if supa:
+        try:
+            practices = (supa.table("practices")
+                         .select("id,name,pipeline_stage,first_referral_date,"
+                                 "last_referral_date,total_referrals,created_at")
+                         .eq("status", "Active")
+                         .execute().data or [])
+        except Exception:
+            return []
+    else:
+        conn = _sqlite()
+        try:
+            practices = [dict(r) for r in conn.execute(
+                "SELECT id,name,pipeline_stage,first_referral_date,last_referral_date,"
+                "total_referrals,created_at FROM practices WHERE status='Active'"
+            ).fetchall()]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+    alerts = []
+    for p in practices:
+        stage     = p.get("pipeline_stage") or "New Lead"
+        first_ref = (p.get("first_referral_date") or "")[:10]
+        last_ref  = (p.get("last_referral_date")  or "")[:10]
+        total     = p.get("total_referrals") or 0
+        created   = (p.get("created_at") or "")[:10]
+
+        if first_ref and first_ref >= d30:
+            alerts.append({
+                "type": "new_referrer", "color": "green",
+                "practice": p["name"], "practice_id": p["id"],
+                "detail": f"First referral logged {first_ref}",
+                "action": "Send thank you letter + schedule lunch",
+            })
+        elif total > 0 and last_ref and last_ref < d30 and stage in ("Referring", "Routine Referring"):
+            alerts.append({
+                "type": "referral_drop", "color": "red",
+                "practice": p["name"], "practice_id": p["id"],
+                "detail": f"No referrals since {last_ref} ({total} total)",
+                "action": "Schedule courtesy call — check in",
+            })
+        elif stage == "New Lead" and total == 0 and created and created <= d150:
+            alerts.append({
+                "type": "six_month_lead", "color": "yellow",
+                "practice": p["name"], "practice_id": p["id"],
+                "detail": f"In New Lead since ~{created[:7]}, no referrals logged",
+                "action": "Evaluate: continue nurturing or move to Dropped",
+            })
+
+    return sorted(alerts, key=lambda a: ("green", "yellow", "red").index(a["color"])
+                  if a["color"] in ("green", "yellow", "red") else 3)
+
+
+def get_referral_monthly_totals(months: int = 12) -> list:
+    """Return [{'month': 'YYYY-MM', 'total': N}, ...] for last N calendar months."""
+    import datetime as _dt
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("referral_log")
+                    .select("week_ending_date,referral_count")
+                    .execute().data or [])
+        except Exception:
+            rows = []
+    else:
+        conn = _sqlite()
+        try:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT week_ending_date, referral_count FROM referral_log"
+            ).fetchall()]
+        except Exception:
+            rows = []
+        finally:
+            conn.close()
+
+    month_totals: dict = {}
+    for r in rows:
+        ym = (r.get("week_ending_date") or "")[:7]
+        if ym:
+            month_totals[ym] = month_totals.get(ym, 0) + (r.get("referral_count") or 0)
+
+    today = _dt.date.today()
+    result = []
+    for i in range(months - 1, -1, -1):
+        dt = (today.replace(day=1) - _dt.timedelta(days=i * 30)).replace(day=1)
+        ym = dt.strftime("%Y-%m")
+        result.append({"month": ym, "total": month_totals.get(ym, 0)})
+    return result
+
+
+def get_referral_dashboard_stats() -> dict:
+    """Return referral KPIs for the main dashboard."""
+    import datetime as _dt
+    today      = _dt.date.today()
+    this_month = today.strftime("%Y-%m")
+    d30        = (today - _dt.timedelta(days=30)).isoformat()
+
+    stats = {
+        "referrals_this_month":    0,
+        "new_referrers_this_month": 0,
+        "referral_drops":          0,
+        "pipeline_referring":      0,
+    }
+
+    supa = _supa()
+    if supa:
+        try:
+            rows = (supa.table("referral_log")
+                    .select("referral_count")
+                    .gte("week_ending_date", f"{this_month}-01")
+                    .execute().data or [])
+            stats["referrals_this_month"] = sum(r.get("referral_count") or 0 for r in rows)
+            nr = (supa.table("practices").select("id", count="exact")
+                  .gte("first_referral_date", f"{this_month}-01")
+                  .eq("status", "Active").execute())
+            stats["new_referrers_this_month"] = nr.count or 0
+            drops = (supa.table("practices").select("id", count="exact")
+                     .in_("pipeline_stage", ["Referring", "Routine Referring"])
+                     .lt("last_referral_date", d30)
+                     .not_.is_("last_referral_date", "null")
+                     .eq("status", "Active").execute())
+            stats["referral_drops"] = drops.count or 0
+            ref = (supa.table("practices").select("id", count="exact")
+                   .in_("pipeline_stage", ["Referring", "Routine Referring"])
+                   .eq("status", "Active").execute())
+            stats["pipeline_referring"] = ref.count or 0
+        except Exception:
+            pass
+        return stats
+
+    conn = _sqlite()
+    try:
+        stats["referrals_this_month"] = conn.execute(
+            "SELECT COALESCE(SUM(referral_count),0) FROM referral_log "
+            "WHERE strftime('%Y-%m',week_ending_date)=?", (this_month,)
+        ).fetchone()[0]
+        stats["new_referrers_this_month"] = conn.execute(
+            "SELECT COUNT(*) FROM practices WHERE status='Active' "
+            "AND first_referral_date>=?", (f"{this_month}-01",)
+        ).fetchone()[0]
+        stats["referral_drops"] = conn.execute(
+            "SELECT COUNT(*) FROM practices WHERE status='Active' "
+            "AND pipeline_stage IN ('Referring','Routine Referring') "
+            "AND last_referral_date IS NOT NULL AND last_referral_date<?", (d30,)
+        ).fetchone()[0]
+        stats["pipeline_referring"] = conn.execute(
+            "SELECT COUNT(*) FROM practices WHERE status='Active' "
+            "AND pipeline_stage IN ('Referring','Routine Referring')"
+        ).fetchone()[0]
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return stats
 
 
 def get_call_attempt_count(practice_id: int) -> int:

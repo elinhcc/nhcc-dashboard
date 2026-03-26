@@ -1047,12 +1047,25 @@ def show_providers():
 
         st.caption(f"Showing {len(practices)} practices")
 
+        _STAGE_EMOJI = {
+            "New Lead": "🔵", "Referring": "🟢", "Routine Referring": "⭐",
+            "Inactive": "🔴", "Dropped": "⚫",
+        }
+
         for practice in practices:
             score = relationship_score(practice["id"])
             color = score_color(score)
             providers = get_providers_for_practice(practice["id"])
+            p_stage = practice.get("pipeline_stage") or "New Lead"
+            s_emoji = _STAGE_EMOJI.get(p_stage, "🔵")
+            total_refs = practice.get("total_referrals") or 0
+            ref_str = f" | {total_refs} refs" if total_refs else ""
 
-            with st.expander(f"{'🟢' if score >= 70 else '🟡' if score >= 40 else '🔴'} {practice['name']} — {practice.get('location_category', 'Other')} | {len(providers)} providers"):
+            with st.expander(
+                f"{'🟢' if score >= 70 else '🟡' if score >= 40 else '🔴'} {practice['name']} — "
+                f"{practice.get('location_category', 'Other')} | {len(providers)} providers | "
+                f"{s_emoji} {p_stage}{ref_str}"
+            ):
                 # Practice detail view
                 detail_col1, detail_col2 = st.columns(2)
 
@@ -1213,7 +1226,7 @@ def show_providers():
                 st.divider()
 
                 # Action buttons — use on_click callbacks to avoid session state errors
-                btn_col1, btn_col2, btn_col3, btn_col4, btn_col5, btn_col6, btn_col7 = st.columns(7)
+                btn_col1, btn_col2, btn_col3, btn_col4, btn_col5, btn_col6, btn_col7, btn_col8 = st.columns(8)
 
                 with btn_col1:
                     if st.button("✏️ Edit", key=f"edit_{practice['id']}"):
@@ -1269,6 +1282,12 @@ def show_providers():
                         help="Permanently delete this practice and all its records",
                     )
 
+                with btn_col8:
+                    if st.button("🔗 Log Ref", key=f"log_ref_{practice['id']}", help="Log weekly referral count"):
+                        st.session_state["ref_log_practice_id"]   = practice["id"]
+                        st.session_state["ref_log_practice_name"] = practice["name"]
+                        st.rerun()
+
                 # Edit form
                 if st.session_state.get(f"editing_{practice['id']}", False):
                     _show_edit_form(practice)
@@ -1286,6 +1305,17 @@ def show_providers():
                         purpose = c.get("purpose", "")
                         purpose_str = f" ({purpose})" if purpose else ""
                         st.caption(f"📅 {date_str} | {ctype}{attempt_str} | {outcome}{purpose_str} | {c.get('notes', '')[:60]}")
+
+    # Log Referral dialog — triggered from any practice card button
+    if st.session_state.get("ref_log_practice_id"):
+        try:
+            from pages.referrals import _log_referral_dialog
+            _log_referral_dialog(
+                st.session_state["ref_log_practice_id"],
+                st.session_state.get("ref_log_practice_name", ""),
+            )
+        except Exception:
+            pass
 
     # ── Referral Intelligence Tab ─────────────────────────────────────
     with tab_providers:

@@ -321,6 +321,7 @@ def main():
             "🤝 Outreach",
             "📨 Flyer Campaigns",
             "📈 Analytics",
+            "🔗 Referrals",
         ]
         if is_admin:
             nav_options += ["⚙️ Settings", "👥 User Management"]
@@ -379,6 +380,9 @@ def main():
     elif page == "📈 Analytics":
         from pages.analytics import show_analytics
         show_analytics()
+    elif page == "🔗 Referrals":
+        from pages.referrals import show_referrals
+        show_referrals()
     elif page == "⚙️ Settings" and is_admin:
         from pages.settings import show_settings
         show_settings()

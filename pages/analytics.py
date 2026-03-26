@@ -23,19 +23,22 @@ def _get_month_count(table, date_col, ym, extra_where=""):
 def show_analytics():
     st.markdown("## Analytics & Reports")
 
-    tab_daily, tab_overview, tab_lunch_outreach, tab_call_email, tab_location, tab_contacts, tab_export = st.tabs([
+    tab_daily, tab_overview, tab_lunch_outreach, tab_call_email, tab_location, tab_contacts, tab_referral, tab_export = st.tabs([
         "Daily Activity Report",
         "Overview",
         "Lunch & Outreach",
         "Call & Email Tracking",
         "Location Comparison",
         "Contact Analysis",
+        "Referral Report",
         "Export Data",
     ])
 
     if not db_exists():
         with tab_daily:
             st.info("Import data to see the daily activity report.")
+        with tab_referral:
+            st.info("Import data to see the referral report.")
         with tab_overview:
             st.warning("No data loaded yet.")
             st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
@@ -401,6 +404,10 @@ def show_analytics():
         else:
             st.info("No contact data yet. Start logging contacts to see analytics.")
 
+    # ── Referral Report ─────────────────────────────────────────────────
+    with tab_referral:
+        _show_referral_report()
+
     # ── Export ─────────────────────────────────────────────────────────
     with tab_export:
         st.markdown("### Export Data")
@@ -445,6 +452,134 @@ def show_analytics():
                             mime="text/csv",
                             key=f"csv_{option}",
                         )
+
+
+def _show_referral_report():
+    """Referral Report tab — weekly summary, top practices, trends, QoQ comparison."""
+    import io
+    from database import (
+        get_referral_monthly_totals, get_all_practices, get_referral_log,
+    )
+    try:
+        import plotly.express as px
+    except ImportError:
+        st.info("Install plotly to see charts.")
+        return
+
+    st.markdown("### Referral Report")
+
+    # ── Period selector ─────────────────────────────────────────────
+    period = st.radio("View Period", ["Weekly", "Monthly", "Quarterly"], horizontal=True, key="rr_period")
+    today = date.today()
+
+    if period == "Weekly":
+        week_start = today - timedelta(days=today.weekday())
+        start_d = week_start
+        end_d   = today
+        label   = f"Week of {week_start.strftime('%b %d, %Y')}"
+    elif period == "Monthly":
+        start_d = today.replace(day=1)
+        end_d   = today
+        label   = today.strftime("%B %Y")
+    else:
+        q_month = ((today.month - 1) // 3) * 3 + 1
+        start_d = today.replace(month=q_month, day=1)
+        end_d   = today
+        label   = f"Q{(today.month - 1) // 3 + 1} {today.year}"
+
+    logs = get_referral_log(start_date=start_d.isoformat(), end_date=end_d.isoformat(), limit=5000)
+
+    # ── Summary metrics ─────────────────────────────────────────────
+    st.markdown(f"#### {label}")
+    total_refs  = sum(r.get("referral_count") or 0 for r in logs)
+    num_prac    = len({r["practice_id"] for r in logs if r.get("practice_id")})
+    new_prac    = len({r["practice_id"] for r in logs
+                       if r.get("practice_id") and r.get("week_ending_date", "") >= today.replace(day=1).isoformat()
+                       and r.get("referral_count", 0) > 0})
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Referrals", total_refs)
+    m2.metric("Practices Referring", num_prac)
+    m3.metric("New This Month", new_prac)
+
+    if not logs:
+        st.info("No referral data for this period.")
+        return
+
+    # ── By practice ─────────────────────────────────────────────────
+    st.markdown("#### Referrals by Practice")
+    df = pd.DataFrame(logs)
+    by_prac = (
+        df.groupby("practice_name")["referral_count"]
+        .sum()
+        .reset_index()
+        .rename(columns={"practice_name": "Practice", "referral_count": "Referrals"})
+        .sort_values("Referrals", ascending=False)
+        .reset_index(drop=True)
+    )
+    st.dataframe(by_prac, use_container_width=True, hide_index=True)
+
+    # ── By service line ─────────────────────────────────────────────
+    if "service_line" in df.columns and df["service_line"].notna().any():
+        st.markdown("#### Referrals by Service Line")
+        by_svc = (
+            df.groupby("service_line")["referral_count"]
+            .sum()
+            .reset_index()
+            .rename(columns={"service_line": "Service Line", "referral_count": "Referrals"})
+            .sort_values("Referrals", ascending=False)
+        )
+        fig = px.pie(by_svc, names="Service Line", values="Referrals",
+                     title="Referrals by Service Line",
+                     color_discrete_sequence=px.colors.qualitative.Set2)
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#1E293B")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── 12-month trend ──────────────────────────────────────────────
+    st.markdown("#### 12-Month Referral Trend")
+    monthly = get_referral_monthly_totals(months=12)
+    df_m = pd.DataFrame(monthly)
+    if df_m["total"].sum() > 0:
+        fig2 = px.bar(df_m, x="month", y="total",
+                      title="Monthly Referrals", color_discrete_sequence=["#0D9488"],
+                      labels={"month": "Month", "total": "Referrals"})
+        fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            font_color="#1E293B")
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # ── QoQ comparison ──────────────────────────────────────────────
+    st.markdown("#### Quarter-over-Quarter")
+    all_logs = get_referral_log(limit=5000)
+    if all_logs:
+        df_all = pd.DataFrame(all_logs)
+        df_all["week_ending_date"] = pd.to_datetime(df_all["week_ending_date"], errors="coerce")
+        df_all = df_all.dropna(subset=["week_ending_date"])
+        df_all["quarter"] = df_all["week_ending_date"].dt.to_period("Q").astype(str)
+        qoq = (df_all.groupby("quarter")["referral_count"]
+               .sum().reset_index()
+               .rename(columns={"quarter": "Quarter", "referral_count": "Referrals"})
+               .tail(6))
+        st.dataframe(qoq, use_container_width=True, hide_index=True)
+
+    # ── Export ──────────────────────────────────────────────────────
+    st.markdown("---")
+    if logs:
+        export_df = pd.DataFrame(logs)
+        export_cols = {
+            "practice_name": "Practice", "week_ending_date": "Week Ending",
+            "referral_count": "Referrals", "service_line": "Service Line",
+            "logged_by": "Logged By", "notes": "Notes",
+        }
+        avail = [c for c in export_cols if c in export_df.columns]
+        export_df = export_df[avail].rename(columns=export_cols)
+        csv = export_df.to_csv(index=False)
+        st.download_button(
+            f"Export {period} Report CSV",
+            data=csv,
+            file_name=f"NHCC_Referral_{period}_{start_d}.csv",
+            mime="text/csv",
+            key="rr_export",
+        )
 
 
 def _show_daily_activity_report():
