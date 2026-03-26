@@ -23,7 +23,8 @@ def _get_month_count(table, date_col, ym, extra_where=""):
 def show_analytics():
     st.markdown("## Analytics & Reports")
 
-    tab_overview, tab_lunch_outreach, tab_call_email, tab_location, tab_contacts, tab_export = st.tabs([
+    tab_daily, tab_overview, tab_lunch_outreach, tab_call_email, tab_location, tab_contacts, tab_export = st.tabs([
+        "Daily Activity Report",
         "Overview",
         "Lunch & Outreach",
         "Call & Email Tracking",
@@ -33,6 +34,8 @@ def show_analytics():
     ])
 
     if not db_exists():
+        with tab_daily:
+            st.info("Import data to see the daily activity report.")
         with tab_overview:
             st.warning("No data loaded yet.")
             st.info("Go to **Settings > Data Import** to upload your provider Excel file.")
@@ -61,6 +64,10 @@ def show_analytics():
     this_ym = now.strftime("%Y-%m")
     last_month = (now.replace(day=1) - timedelta(days=1))
     last_ym = last_month.strftime("%Y-%m")
+
+    # ── Daily Activity Report ───────────────────────────────────────────
+    with tab_daily:
+        _show_daily_activity_report()
 
     # ── Overview ───────────────────────────────────────────────────────
     with tab_overview:
@@ -438,6 +445,147 @@ def show_analytics():
                             mime="text/csv",
                             key=f"csv_{option}",
                         )
+
+
+def _show_daily_activity_report():
+    """Render the Daily Activity Report tab."""
+    import io
+    from database import get_contact_log_by_date
+
+    # ── View mode ────────────────────────────────────────────────────
+    view_mode = st.radio("View Mode", ["Daily", "Weekly"], horizontal=True, key="dar_view_mode")
+
+    today = date.today()
+
+    if view_mode == "Daily":
+        selected_date = st.date_input(
+            "Select Date", value=today, max_value=today, key="dar_date"
+        )
+        start_date = selected_date.strftime("%Y-%m-%d")
+        end_date = start_date
+        report_label = selected_date.strftime("%B %d, %Y")
+    else:
+        selected_date = st.date_input(
+            "Any date in the week", value=today, max_value=today, key="dar_week_date"
+        )
+        week_start = selected_date - timedelta(days=selected_date.weekday())  # Monday
+        week_end = min(week_start + timedelta(days=6), today)
+        start_date = week_start.strftime("%Y-%m-%d")
+        end_date = week_end.strftime("%Y-%m-%d")
+        report_label = (
+            f"Week of {week_start.strftime('%B %d')} – {week_end.strftime('%B %d, %Y')}"
+        )
+
+    st.markdown(f"### {report_label}")
+
+    # ── Fetch data ───────────────────────────────────────────────────
+    contacts = get_contact_log_by_date(start_date, end_date)
+
+    if not contacts:
+        st.info(f"No contact activity recorded for {report_label}.")
+        return
+
+    df = pd.DataFrame(contacts)
+    df["contact_date"] = pd.to_datetime(df["contact_date"], errors="coerce")
+
+    # ── Summary Cards ────────────────────────────────────────────────
+    st.markdown("#### Summary")
+
+    total = len(df)
+    calls = int((df["contact_type"] == "Phone Call").sum())
+    emails = int((df["contact_type"] == "Email Sent").sum())
+    faxes = int((df["contact_type"] == "Fax Sent").sum())
+
+    outcome_lower = df["outcome"].fillna("").str.lower() if "outcome" in df.columns else pd.Series([""] * len(df))
+    lunches_sched = int(outcome_lower.str.contains("lunch", na=False).sum())
+
+    purpose_lower = df["purpose"].fillna("").str.lower() if "purpose" in df.columns else pd.Series([""] * len(df))
+    new_leads = int(purpose_lower.str.contains("new lead", na=False).sum())
+    follow_ups = int(purpose_lower.str.contains("follow", na=False).sum())
+    courtesy = int(purpose_lower.str.contains("courtesy", na=False).sum())
+    lunch_conf = int(purpose_lower.str.contains("confirmation", na=False).sum())
+
+    r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns(5)
+    r1c1.metric("Total Contacts", total)
+    r1c2.metric("Calls Made", calls)
+    r1c3.metric("Emails Sent", emails)
+    r1c4.metric("Faxes Sent", faxes)
+    r1c5.metric("Lunches Scheduled", lunches_sched)
+
+    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    r2c1.metric("New Leads", new_leads)
+    r2c2.metric("Follow Up Calls", follow_ups)
+    r2c3.metric("Courtesy Calls", courtesy)
+    r2c4.metric("Lunch Confirmations", lunch_conf)
+
+    # ── Detailed Contact Log Table ───────────────────────────────────
+    st.markdown("#### Contact Log")
+
+    _col_map = {
+        "team_member": "Staff Member",
+        "practice_name": "Practice",
+        "contact_type": "Contact Type",
+        "outcome": "Outcome",
+        "purpose": "Purpose",
+        "notes": "Notes",
+        "contact_date": "Time",
+    }
+    _available = [c for c in _col_map if c in df.columns]
+    df_log = df[_available].copy()
+    df_log.columns = [_col_map[c] for c in _available]
+
+    if "Time" in df_log.columns:
+        df_log["Time"] = pd.to_datetime(df_log["Time"], errors="coerce").dt.strftime("%m/%d %I:%M %p")
+
+    _sort_by = [c for c in ["Staff Member", "Time"] if c in df_log.columns]
+    if _sort_by:
+        df_log = df_log.sort_values(_sort_by).reset_index(drop=True)
+
+    st.dataframe(df_log, use_container_width=True, hide_index=True)
+
+    # ── Staff Performance Summary ────────────────────────────────────
+    if "team_member" in df.columns and df["team_member"].notna().any():
+        st.markdown("#### Staff Performance")
+        staff_rows = []
+        for member, grp in df.groupby("team_member", dropna=False):
+            grp_outcome = grp["outcome"].fillna("").str.lower() if "outcome" in grp.columns else pd.Series([""] * len(grp))
+            grp_purpose = grp["purpose"].fillna("").str.lower() if "purpose" in grp.columns else pd.Series([""] * len(grp))
+            staff_rows.append({
+                "Staff Member": member or "Unknown",
+                "Total Contacts": len(grp),
+                "Calls": int((grp["contact_type"] == "Phone Call").sum()),
+                "Emails": int((grp["contact_type"] == "Email Sent").sum()),
+                "Faxes": int((grp["contact_type"] == "Fax Sent").sum()),
+                "Lunches Scheduled": int(grp_outcome.str.contains("lunch", na=False).sum()),
+                "Follow Ups Created": int(grp_purpose.str.contains("follow", na=False).sum()),
+            })
+        df_staff = (
+            pd.DataFrame(staff_rows)
+            .sort_values("Total Contacts", ascending=False)
+            .reset_index(drop=True)
+        )
+        st.dataframe(df_staff, use_container_width=True, hide_index=True)
+
+    # ── Export ───────────────────────────────────────────────────────
+    st.markdown("---")
+    export_df = df[_available].copy()
+    export_df.columns = [_col_map[c] for c in _available]
+    if "Time" in export_df.columns:
+        export_df["Time"] = pd.to_datetime(export_df["Time"], errors="coerce").dt.strftime("%Y-%m-%d %I:%M %p")
+    csv_data = export_df.to_csv(index=False)
+
+    if view_mode == "Weekly":
+        fname = f"NHCC_Activity_Week_{start_date}_to_{end_date}.csv"
+    else:
+        fname = f"NHCC_Activity_{start_date}.csv"
+
+    st.download_button(
+        f"Export {view_mode} Report as CSV",
+        data=csv_data,
+        file_name=fname,
+        mime="text/csv",
+        key="dar_export",
+    )
 
 
 def _write_export_sheets(writer, options):

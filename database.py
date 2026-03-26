@@ -603,6 +603,38 @@ def get_contact_log(practice_id=None, limit=50):
     return [dict(r) for r in rows]
 
 
+def get_contact_log_by_date(start_date: str, end_date: str, limit: int = 2000):
+    """Return contact log rows between start_date and end_date (inclusive, YYYY-MM-DD).
+    Joins practices for practice_name. Ordered by team_member then contact_date.
+    """
+    supa = _supa()
+    if supa:
+        rows = (
+            supa.table("contact_log")
+            .select("*, practices(name)")
+            .gte("contact_date", start_date)
+            .lte("contact_date", end_date + "T23:59:59")
+            .order("team_member")
+            .order("contact_date")
+            .limit(limit)
+            .execute()
+            .data or []
+        )
+        for row in rows:
+            _pop_embed(row, "practices", "practice_name")
+        return rows
+    conn = _sqlite()
+    rows = conn.execute(
+        "SELECT cl.*, pr.name as practice_name FROM contact_log cl "
+        "JOIN practices pr ON cl.practice_id=pr.id "
+        "WHERE cl.contact_date >= ? AND cl.contact_date <= ? "
+        "ORDER BY cl.team_member, cl.contact_date LIMIT ?",
+        (start_date, end_date + " 23:59:59", limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_call_attempt_count(practice_id: int) -> int:
     supa = _supa()
     if supa:
