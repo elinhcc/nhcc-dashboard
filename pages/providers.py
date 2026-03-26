@@ -143,201 +143,228 @@ def _contact_dialog(practice_id):
 
     st.markdown(f"### Log Contact - {practice['name']}")
 
-    # Call history for this practice
     call_count = get_call_attempt_count(practice_id)
     contacts = get_contact_log(practice_id=practice_id, limit=20)
     phone_contacts = [c for c in contacts if c.get("contact_type") == "Phone Call"]
 
-    if phone_contacts:
-        st.markdown("**Recent Call History:**")
-        for c in phone_contacts[:5]:
-            date_str = (c.get("contact_date") or "")[:10] if c.get("contact_date") else "?"
-            attempt_num = c.get("call_attempt_number", "")
-            attempt_label = f"Call #{attempt_num}" if attempt_num else "Call"
-            outcome = c.get("outcome", "")
-            st.caption(f"Call {attempt_label} - {date_str} - {outcome}")
+    if call_count >= 3 and not any(c.get("outcome") == "Scheduled lunch" for c in phone_contacts):
+        st.warning(f"**{call_count} calls** with no lunch scheduled. Consider trying email or in-person visit.")
 
-        if call_count >= 3 and not any(c.get("outcome") == "Scheduled lunch" for c in phone_contacts):
-            st.warning(f"**{call_count} calls** with no lunch scheduled. Consider trying email or in-person visit.")
+    # Two-column layout: form on left, full history on right
+    col_form, col_hist = st.columns([3, 2])
 
-    with st.form("modal_contact_form", clear_on_submit=True):
-        _contact_options = ["Phone Call", "Email Sent", "Fax Sent", "In-Person Visit"]
-        _default_type = st.session_state.get("contact_type_default")
-        _default_idx = _contact_options.index(_default_type) if _default_type in _contact_options else 0
-        # Clear the default so it doesn't persist to the next open
-        st.session_state.contact_type_default = None
+    with col_hist:
+        st.markdown("**Recent Contact History**")
+        if contacts:
+            for c in contacts[:15]:
+                dt = c.get("contact_date") or ""
+                date_str = dt[:10] if dt else "?"
+                time_str = dt[11:16] if len(dt) > 10 else ""
+                ctype    = c.get("contact_type") or ""
+                outcome  = c.get("outcome") or ""
+                person   = c.get("person_contacted") or ""
+                member   = c.get("team_member") or ""
+                notes    = c.get("notes") or ""
 
-        contact_type = st.radio(
-            "Contact Type",
-            _contact_options,
-            index=_default_idx,
-            horizontal=True,
-        )
+                label_parts = [f"**{date_str}**"]
+                if time_str:
+                    label_parts.append(time_str)
+                label_parts.append(f"— {ctype}")
+                st.markdown(" ".join(label_parts))
+                detail_parts = []
+                if outcome:
+                    detail_parts.append(f"Outcome: {outcome}")
+                if person:
+                    detail_parts.append(f"With: {person}")
+                if member:
+                    detail_parts.append(f"By: {member}")
+                if detail_parts:
+                    st.caption(" · ".join(detail_parts))
+                if notes:
+                    st.caption(f"📝 {notes}")
+                st.divider()
+        else:
+            st.info("No previous contacts for this practice")
 
-        col_d, col_t = st.columns(2)
-        with col_d:
-            contact_date = st.date_input("Date", value=datetime.now())
-        with col_t:
-            contact_time = st.time_input("Time", value=datetime.now())
+    with col_form:
+        with st.form("modal_contact_form", clear_on_submit=True):
+            _contact_options = ["Phone Call", "Email Sent", "Fax Sent", "In-Person Visit"]
+            _default_type = st.session_state.get("contact_type_default")
+            _default_idx = _contact_options.index(_default_type) if _default_type in _contact_options else 0
+            # Clear the default so it doesn't persist to the next open
+            st.session_state.contact_type_default = None
 
-        is_phone = contact_type == "Phone Call"
-        is_email = contact_type == "Email Sent"
-        is_fax = contact_type == "Fax Sent"
-
-        phone_sub_type = None
-        if is_phone:
-            st.caption(f"This will be **Call Attempt #{call_count + 1}**")
-            phone_sub_type = st.selectbox(
-                "How did the call go?",
-                ["Spoke with someone", "Left Voicemail", "No Answer"],
+            contact_type = st.radio(
+                "Contact Type",
+                _contact_options,
+                index=_default_idx,
+                horizontal=True,
             )
 
-        person_contacted = st.text_input("Person Contacted")
+            col_d, col_t = st.columns(2)
+            with col_d:
+                contact_date = st.date_input("Date", value=datetime.now())
+            with col_t:
+                contact_time = st.time_input("Time", value=datetime.now())
 
-        # Type-specific fields
-        email_subject = ""
-        fax_document = ""
-        if is_email:
-            email_subject = st.text_input("Email Subject", placeholder="e.g. Lunch scheduling request")
-            email_addr = practice.get("email", "")
-            if email_addr:
-                st.markdown(f'Open Outlook: <a class="contact-email" href="mailto:{email_addr}">✉️ {email_addr}</a>', unsafe_allow_html=True)
+            is_phone = contact_type == "Phone Call"
+            is_email = contact_type == "Email Sent"
+            is_fax = contact_type == "Fax Sent"
 
-        if is_fax:
-            fax_document = st.text_input("Document Sent", placeholder="e.g. Referral form, Flyer")
-            fax_email = practice.get("fax_vonage_email", "")
-            if fax_email:
-                st.markdown(f'Send via Outlook: <a class="contact-fax" href="mailto:{fax_email}">📠 {fax_email}</a>', unsafe_allow_html=True)
-
-        if is_phone:
-            outcome = st.selectbox("Call Outcome (when spoke with someone)", [
-                "Scheduled lunch", "Interested", "Will call back",
-                "Not interested", "Declined", "Other",
-            ])
-            purpose = st.selectbox("Purpose of Call", [
-                "Schedule lunch", "Confirm lunch", "Follow-up",
-                "Thank you call", "Introduction", "Other",
-            ])
-        elif is_email:
-            outcome = st.selectbox("Outcome", [
-                "Sent", "Replied", "Bounced", "No Response", "Interested", "Other",
-            ])
-            purpose = st.selectbox("Purpose", [
-                "Schedule lunch", "Confirm lunch", "Follow-up",
-                "Send information", "Introduction", "Other",
-            ])
-        elif is_fax:
-            outcome = st.selectbox("Outcome", [
-                "Sent Successfully", "Failed", "Pending", "Other",
-            ])
-            purpose = st.selectbox("Purpose", [
-                "Send flyer", "Send referral form", "Send information",
-                "Schedule lunch", "Other",
-            ])
-        else:
-            outcome = st.selectbox("Outcome", [
-                "Successful", "Interested", "Follow-up Needed",
-                "Not interested", "Other",
-            ])
-            purpose = st.selectbox("Purpose", [
-                "Schedule lunch", "Confirm lunch", "Follow-up",
-                "Thank you", "Introduction", "Other",
-            ])
-
-        team_member = st.selectbox("Team Member", ["Robbie", "Kianah", "Darvin", "Other"])
-        notes = st.text_area("Notes", height=80)
-
-        col_save, col_cancel = st.columns(2)
-        with col_save:
-            submitted = st.form_submit_button("Save Contact", type="primary", use_container_width=True)
-        with col_cancel:
-            cancelled = st.form_submit_button("Cancel", use_container_width=True)
-
-        if submitted:
-            from database import add_task, _add_business_days
-            contact_datetime = datetime.combine(contact_date, contact_time).isoformat()
-
-            # Resolve effective outcome for phone calls
-            if is_phone and phone_sub_type in ("Left Voicemail", "No Answer"):
-                effective_outcome = phone_sub_type
-            else:
-                effective_outcome = outcome
-
-            log_data = {
-                "practice_id": practice_id,
-                "contact_type": contact_type,
-                "contact_date": contact_datetime,
-                "contact_method": "phone" if is_phone else ("email" if is_email else ("fax" if is_fax else "in-person")),
-                "team_member": team_member,
-                "person_contacted": person_contacted,
-                "outcome": effective_outcome,
-                "purpose": purpose,
-                "notes": notes,
-            }
+            phone_sub_type = None
             if is_phone:
-                log_data["call_attempt_number"] = call_count + 1
-            if is_email and email_subject:
-                log_data["email_subject"] = email_subject
-            if is_fax and fax_document:
-                log_data["fax_document"] = fax_document
-            add_contact_log(log_data)
+                st.caption(f"This will be **Call Attempt #{call_count + 1}**")
+                phone_sub_type = st.selectbox(
+                    "How did the call go?",
+                    ["Spoke with someone", "Left Voicemail", "No Answer"],
+                )
 
-            # Auto-create follow-up tasks based on outcome
-            _today = contact_date
-            try:
-                if is_phone and phone_sub_type == "Left Voicemail":
-                    _due = _add_business_days(_today, 2).isoformat()
-                    add_task({
-                        "practice_id": practice_id,
-                        "task_type": "Follow-up Call",
-                        "description": f"Follow-up call to {practice['name']} (attempt #{call_count + 2})",
-                        "due_date": _due,
-                        "assigned_to": team_member,
-                    })
-                elif is_phone and phone_sub_type == "No Answer":
-                    _due = _add_business_days(_today, 1).isoformat()
-                    add_task({
-                        "practice_id": practice_id,
-                        "task_type": "Follow-up Call",
-                        "description": f"Follow-up call to {practice['name']} — no answer (attempt #{call_count + 2})",
-                        "due_date": _due,
-                        "assigned_to": team_member,
-                    })
-                elif is_phone and phone_sub_type == "Spoke with someone" and outcome == "Scheduled lunch":
-                    add_task({
-                        "practice_id": practice_id,
-                        "task_type": "Catering",
-                        "description": f"Order catering for {practice['name']} lunch",
-                        "due_date": _add_business_days(_today, 3).isoformat(),
-                        "assigned_to": team_member,
-                    })
-                    add_task({
-                        "practice_id": practice_id,
-                        "task_type": "Confirmation Email",
-                        "description": f"Send confirmation email to {practice['name']}",
-                        "due_date": _add_business_days(_today, 1).isoformat(),
-                        "assigned_to": team_member,
-                    })
-                elif effective_outcome in ("Interested", "Will call back", "Follow-up Needed"):
-                    _due = _add_business_days(_today, 3).isoformat()
-                    add_task({
-                        "practice_id": practice_id,
-                        "task_type": "Follow-up",
-                        "description": f"Follow up with {practice['name']} — {effective_outcome}",
-                        "due_date": _due,
-                        "assigned_to": team_member,
-                    })
-            except Exception:
-                pass  # Don't block contact log on task creation failure
+            person_contacted = st.text_input("Person Contacted")
 
-            attempt_label = f" (Attempt #{call_count + 1}, {phone_sub_type})" if is_phone else ""
-            st.session_state.active_contact_form = None
-            st.session_state.show_contact_success = f"{contact_type} logged for {practice['name']}{attempt_label}"
-            st.rerun()
+            # Type-specific fields
+            email_subject = ""
+            fax_document = ""
+            if is_email:
+                email_subject = st.text_input("Email Subject", placeholder="e.g. Lunch scheduling request")
+                email_addr = practice.get("email", "")
+                if email_addr:
+                    st.markdown(f'Open Outlook: <a class="contact-email" href="mailto:{email_addr}">✉️ {email_addr}</a>', unsafe_allow_html=True)
 
-        if cancelled:
-            st.session_state.active_contact_form = None
-            st.rerun()
+            if is_fax:
+                fax_document = st.text_input("Document Sent", placeholder="e.g. Referral form, Flyer")
+                fax_email = practice.get("fax_vonage_email", "")
+                if fax_email:
+                    st.markdown(f'Send via Outlook: <a class="contact-fax" href="mailto:{fax_email}">📠 {fax_email}</a>', unsafe_allow_html=True)
+
+            if is_phone:
+                outcome = st.selectbox("Call Outcome (when spoke with someone)", [
+                    "Scheduled lunch", "Interested", "Will call back",
+                    "Not interested", "Declined", "Other",
+                ])
+                purpose = st.selectbox("Purpose of Call", [
+                    "Schedule lunch", "Confirm lunch", "Follow-up",
+                    "Thank you call", "Introduction", "Other",
+                ])
+            elif is_email:
+                outcome = st.selectbox("Outcome", [
+                    "Sent", "Replied", "Bounced", "No Response", "Interested", "Other",
+                ])
+                purpose = st.selectbox("Purpose", [
+                    "Schedule lunch", "Confirm lunch", "Follow-up",
+                    "Send information", "Introduction", "Other",
+                ])
+            elif is_fax:
+                outcome = st.selectbox("Outcome", [
+                    "Sent Successfully", "Failed", "Pending", "Other",
+                ])
+                purpose = st.selectbox("Purpose", [
+                    "Send flyer", "Send referral form", "Send information",
+                    "Schedule lunch", "Other",
+                ])
+            else:
+                outcome = st.selectbox("Outcome", [
+                    "Successful", "Interested", "Follow-up Needed",
+                    "Not interested", "Other",
+                ])
+                purpose = st.selectbox("Purpose", [
+                    "Schedule lunch", "Confirm lunch", "Follow-up",
+                    "Thank you", "Introduction", "Other",
+                ])
+
+            team_member = st.selectbox("Team Member", ["Robbie", "Kianah", "Darvin", "Other"])
+            notes = st.text_area("Notes", height=80)
+
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                submitted = st.form_submit_button("Save Contact", type="primary", use_container_width=True)
+            with col_cancel:
+                cancelled = st.form_submit_button("Cancel", use_container_width=True)
+
+            if submitted:
+                from database import add_task, _add_business_days
+                contact_datetime = datetime.combine(contact_date, contact_time).isoformat()
+
+                # Resolve effective outcome for phone calls
+                if is_phone and phone_sub_type in ("Left Voicemail", "No Answer"):
+                    effective_outcome = phone_sub_type
+                else:
+                    effective_outcome = outcome
+
+                log_data = {
+                    "practice_id": practice_id,
+                    "contact_type": contact_type,
+                    "contact_date": contact_datetime,
+                    "contact_method": "phone" if is_phone else ("email" if is_email else ("fax" if is_fax else "in-person")),
+                    "team_member": team_member,
+                    "person_contacted": person_contacted,
+                    "outcome": effective_outcome,
+                    "purpose": purpose,
+                    "notes": notes,
+                }
+                if is_phone:
+                    log_data["call_attempt_number"] = call_count + 1
+                if is_email and email_subject:
+                    log_data["email_subject"] = email_subject
+                if is_fax and fax_document:
+                    log_data["fax_document"] = fax_document
+                add_contact_log(log_data)
+
+                # Auto-create follow-up tasks based on outcome
+                _today = contact_date
+                try:
+                    if is_phone and phone_sub_type == "Left Voicemail":
+                        _due = _add_business_days(_today, 2).isoformat()
+                        add_task({
+                            "practice_id": practice_id,
+                            "task_type": "Follow-up Call",
+                            "description": f"Follow-up call to {practice['name']} (attempt #{call_count + 2})",
+                            "due_date": _due,
+                            "assigned_to": team_member,
+                        })
+                    elif is_phone and phone_sub_type == "No Answer":
+                        _due = _add_business_days(_today, 1).isoformat()
+                        add_task({
+                            "practice_id": practice_id,
+                            "task_type": "Follow-up Call",
+                            "description": f"Follow-up call to {practice['name']} — no answer (attempt #{call_count + 2})",
+                            "due_date": _due,
+                            "assigned_to": team_member,
+                        })
+                    elif is_phone and phone_sub_type == "Spoke with someone" and outcome == "Scheduled lunch":
+                        add_task({
+                            "practice_id": practice_id,
+                            "task_type": "Catering",
+                            "description": f"Order catering for {practice['name']} lunch",
+                            "due_date": _add_business_days(_today, 3).isoformat(),
+                            "assigned_to": team_member,
+                        })
+                        add_task({
+                            "practice_id": practice_id,
+                            "task_type": "Confirmation Email",
+                            "description": f"Send confirmation email to {practice['name']}",
+                            "due_date": _add_business_days(_today, 1).isoformat(),
+                            "assigned_to": team_member,
+                        })
+                    elif effective_outcome in ("Interested", "Will call back", "Follow-up Needed"):
+                        _due = _add_business_days(_today, 3).isoformat()
+                        add_task({
+                            "practice_id": practice_id,
+                            "task_type": "Follow-up",
+                            "description": f"Follow up with {practice['name']} — {effective_outcome}",
+                            "due_date": _due,
+                            "assigned_to": team_member,
+                        })
+                except Exception:
+                    pass  # Don't block contact log on task creation failure
+
+                attempt_label = f" (Attempt #{call_count + 1}, {phone_sub_type})" if is_phone else ""
+                st.session_state.active_contact_form = None
+                st.session_state.show_contact_success = f"{contact_type} logged for {practice['name']}{attempt_label}"
+                st.rerun()
+
+            if cancelled:
+                st.session_state.active_contact_form = None
+                st.rerun()
 
 
 def render_contact_modal():
