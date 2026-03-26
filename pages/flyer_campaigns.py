@@ -190,9 +190,30 @@ def show_flyer_campaigns():
 
         filtered = [p for p in fax_practices if p.get("location_category") in location_filter]
 
-        # --- Select All checkbox (uses on_change callback) ---
-        # Build list of individual-checkbox keys for the current visible set
-        _visible_keys = [f"flyer_sel_{p['id']}" for p in filtered]
+        # ── Pagination ───────────────────────────────────────────────
+        PAGE_SIZE = 25
+
+        # Initialize page only on first load — never reset mid-session
+        if "flyer_page" not in st.session_state:
+            st.session_state["flyer_page"] = 0
+
+        # Reset page when location filter changes
+        _filter_sig = str(sorted(location_filter))
+        if st.session_state.get("_flyer_last_filter") != _filter_sig:
+            st.session_state["_flyer_last_filter"] = _filter_sig
+            st.session_state["flyer_page"] = 0
+
+        total_pages = max(1, (len(filtered) + PAGE_SIZE - 1) // PAGE_SIZE)
+
+        # Clamp page to valid range (e.g. filter shrunk the list)
+        if st.session_state["flyer_page"] >= total_pages:
+            st.session_state["flyer_page"] = total_pages - 1
+
+        _page_start = st.session_state["flyer_page"] * PAGE_SIZE
+        _page_practices = filtered[_page_start : _page_start + PAGE_SIZE]
+
+        # --- Select All checkbox (current page only, uses on_change callback) ---
+        _visible_keys = [f"flyer_sel_{p['id']}" for p in _page_practices]
 
         def _on_select_all_changed():
             """Callback: write Select All state into every individual checkbox key."""
@@ -200,8 +221,6 @@ def show_flyer_campaigns():
             for k in _visible_keys:
                 st.session_state[k] = val
 
-        # Before rendering Select All, check whether all individuals are
-        # already checked (so the Select All checkbox reflects reality).
         all_checked = (
             all(st.session_state.get(k, False) for k in _visible_keys)
             if _visible_keys else False
@@ -210,27 +229,65 @@ def show_flyer_campaigns():
         st.session_state["flyer_select_all"] = all_checked
 
         st.checkbox(
-            "Select All",
+            "Select All (this page)",
             key="flyer_select_all",
             on_change=_on_select_all_changed,
         )
 
-        # Individual checkboxes
-        selected_practices = []
-        for p in filtered:
+        # Individual checkboxes for current page only
+        for p in _page_practices:
             pid = p["id"]
             cb_key = f"flyer_sel_{pid}"
             vonage = p.get("fax_vonage_email", "")
             valid_marker = "" if validate_vonage_email(vonage) else " [INVALID]"
-
-            checked = st.checkbox(
+            st.checkbox(
                 f"{p['name']}  ---  {p.get('fax', '')}  ->  {vonage}{valid_marker}",
                 key=cb_key,
             )
-            if checked:
-                selected_practices.append(p)
 
-        st.markdown(f"**{len(selected_practices)} recipients selected**")
+        # Count selections across ALL filtered practices (preserved across page changes
+        # because each checkbox lives in session_state keyed by practice ID)
+        selected_practices = [
+            p for p in filtered
+            if st.session_state.get(f"flyer_sel_{p['id']}", False)
+        ]
+
+        # ── Pagination controls ──────────────────────────────────────
+        if total_pages > 1:
+            st.markdown("---")
+            _pcol1, _pcol2, _pcol3 = st.columns([1, 2, 1])
+
+            def _go_prev():
+                st.session_state["flyer_page"] = max(0, st.session_state["flyer_page"] - 1)
+
+            def _go_next():
+                st.session_state["flyer_page"] = min(
+                    total_pages - 1, st.session_state["flyer_page"] + 1
+                )
+
+            with _pcol1:
+                st.button(
+                    "← Prev",
+                    on_click=_go_prev,
+                    disabled=st.session_state["flyer_page"] == 0,
+                )
+            with _pcol2:
+                _cur = st.session_state["flyer_page"]
+                st.markdown(
+                    f"<div style='text-align:center; padding-top:6px'>"
+                    f"Page <b>{_cur + 1}</b> of {total_pages}"
+                    f" &nbsp;|&nbsp; {len(filtered)} practices total</div>",
+                    unsafe_allow_html=True,
+                )
+            with _pcol3:
+                st.button(
+                    "Next →",
+                    on_click=_go_next,
+                    disabled=st.session_state["flyer_page"] >= total_pages - 1,
+                )
+            st.markdown("---")
+
+        st.markdown(f"**{len(selected_practices)} recipients selected** (across all pages)")
 
         # Warn about invalid vonage emails
         invalid_in_selection = [
